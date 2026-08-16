@@ -18,3 +18,4 @@ env/
 .ruff_cache/
 .DS_Store
 Thumbs.db
+package-lock.json

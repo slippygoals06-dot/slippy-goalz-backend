@@ -18,7 +18,7 @@ WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
 # Public customer booking page (Vercel)
 BOOKING_PAGE_URL = os.getenv(
     "BOOKING_PAGE_URL",
-    "https://irepair-dashboard.vercel.app/book",
+    "https://slippy-goalz-dashboard.vercel.app/book",
 ).rstrip("/")
 
 # Optional — set REMINDERS_ENABLED=true only after Meta templates are Approved
