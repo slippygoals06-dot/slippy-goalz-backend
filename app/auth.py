@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 from app.config import SECRET_KEY, ALGORITHM, OWNER_USERNAME
 
@@ -30,3 +30,20 @@ def verify_token(token: str = Depends(oauth2_scheme)):
         return username
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def optional_owner(request: Request) -> Optional[str]:
+    auth = request.headers.get("authorization") or ""
+    if not auth.lower().startswith("bearer "):
+        return None
+    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        if not username or username != OWNER_USERNAME:
+            return None
+        return username
+    except JWTError:
+        return None

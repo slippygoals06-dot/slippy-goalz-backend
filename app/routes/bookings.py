@@ -8,11 +8,10 @@ from supabase import create_client
 
 from app.appointment_time import parse_appointment_datetime
 from app.audit import log_audit_event
-from app.auth import verify_token
+from app.auth import verify_token, optional_owner
 from app.config import SUPABASE_URL, SUPABASE_KEY
 from app.errors import http_500
 from app.phone import normalize_phone
-from app.pricing import calculate_booking_amount
 from app.rate_limit import SlidingWindowRateLimiter, client_ip
 from app.routes.reminders import send_booking_confirmation, schedule_reminder
 from app.slot_claim import SLOT_UNAVAILABLE_MSG, claim_slot, link_slot_booking, release_slot
@@ -50,7 +49,7 @@ class Booking(BaseModel):
     status: Optional[str] = None
     payment_status: Optional[str] = None
     notes: Optional[str] = Field(None, max_length=500)
-    amount: Optional[float] = None
+    amount: Optional[float] = Field(None, ge=0, le=10_000_000)
     source: Optional[str] = Field(None, max_length=40)
 
     @field_validator("email", mode="before")
@@ -84,7 +83,7 @@ class BookingUpdate(BaseModel):
     status: Optional[str] = None
     payment_status: Optional[str] = None
     notes: Optional[str] = None
-    amount: Optional[float] = None
+    amount: Optional[float] = Field(None, ge=0, le=10_000_000)
     source: Optional[str] = None
 
 class StatusUpdate(BaseModel):
@@ -181,9 +180,6 @@ def create_booking(booking: Booking, request: Request):
         if not claimed:
             raise HTTPException(status_code=409, detail=SLOT_UNAVAILABLE_MSG)
 
-        # Never trust client amount — recalculate from tier pricing when possible
-        server_amount = calculate_booking_amount(booking.device, booking.service)
-
         payment_mode = normalize_payment_mode(booking.payment_mode or booking.issue)
 
         slot_id = claimed.get("id")
@@ -202,8 +198,8 @@ def create_booking(booking: Booking, request: Request):
             "Payment Status": "Unpaid",
             "Notes": booking.notes,
         }
-        if server_amount is not None:
-            data["amount"] = server_amount
+        if optional_owner(request) and booking.amount is not None:
+            data["amount"] = float(booking.amount)
         if booking.source:
             data["Source"] = booking.source
 
