@@ -51,6 +51,7 @@ app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 _origins = [
     "https://slippy-goalz-dashboard.vercel.app",
+    "https://slippy-goalz-dashboard-blue.vercel.app",
     "https://irepair-dashboard.vercel.app",
     "http://localhost:5173",
     "http://localhost:5174",
@@ -65,7 +66,7 @@ if not IS_PRODUCTION:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
-    allow_origin_regex=r"https://(irepair-dashboard|slippy-goalz-dashboard)(-[A-Za-z0-9-]+)?\.vercel\.app$",
+    allow_origin_regex=r"https://(irepair-dashboard|slippy-goalz-dashboard)[A-Za-z0-9.-]*\.vercel\.app$",
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
