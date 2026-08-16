@@ -4,6 +4,7 @@ from typing import Optional
 from supabase import create_client
 from app.config import SUPABASE_URL, SUPABASE_KEY
 from app.auth import verify_token
+from app.errors import http_500
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -20,7 +21,7 @@ def get_leads(user=Depends(verify_token)):
         res = supabase.table("leads").select("*").order("created_at", desc=True).execute()
         return res.data  # plain array
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 @router.post("/")
 def create_lead(lead: Lead, user=Depends(verify_token)):
@@ -34,7 +35,7 @@ def create_lead(lead: Lead, user=Depends(verify_token)):
         res = supabase.table("leads").insert(data).execute()
         return res.data[0] if res.data else {}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 @router.delete("/{lead_id}")
@@ -55,4 +56,4 @@ def delete_lead(lead_id: str, user=Depends(verify_token)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)

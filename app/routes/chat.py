@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 from groq import Groq
@@ -7,9 +7,10 @@ from app.config import SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY, BOOKING_PAGE_UR
 from app.auth import verify_token
 from app.phone import normalize_phone
 from app.slot_claim import claim_slot, link_slot_booking, release_slot
+from app.errors import http_500
+from app.rate_limit import SlidingWindowRateLimiter, client_ip
 import uuid
 import re
-import time
 import logging
 from datetime import date, timedelta, datetime
 
@@ -28,20 +29,7 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 # ── Rate limiting ────────────────────────────────────────────────────────────────
 # Simple sliding-window limiter keyed by session_id, in-process.
 # Good enough for a single-instance Railway deployment.
-RATE_LIMIT_MAX_MESSAGES = 15
-RATE_LIMIT_WINDOW_SECONDS = 60
-_rate_limit_log: Dict[str, list] = {}
-
-def is_rate_limited(session_id: str) -> bool:
-    now = time.time()
-    timestamps = _rate_limit_log.get(session_id, [])
-    timestamps = [t for t in timestamps if now - t < RATE_LIMIT_WINDOW_SECONDS]
-    timestamps.append(now)
-    _rate_limit_log[session_id] = timestamps
-    if len(timestamps) > RATE_LIMIT_MAX_MESSAGES:
-        logger.warning(f"Rate limit hit for session {session_id} ({len(timestamps)} msgs/{RATE_LIMIT_WINDOW_SECONDS}s)")
-        return True
-    return False
+_chat_ip_limiter = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
 
 # ── Safe Groq wrapper (graceful fallback on outage/timeout) ──────────────────────
 def safe_groq_call(messages: list, max_tokens: int = 300, temperature: float = 0.4, fallback: str = None) -> str:
@@ -668,17 +656,22 @@ def has_duplicate_booking(phone: str, booking_date: str) -> bool:
     except: return False
 
 # ── Find booking by phone ──────────────────────────────────────────────────────
-def find_bookings_by_phone(phone: str) -> list:
+def find_bookings_by_phone(phone: str, session_booking_id: Optional[str] = None) -> list:
+    """Only return a booking created in this chat session (phone-only lookup is not enough)."""
+    if not session_booking_id:
+        return []
     try:
         today = str(date.today())
         res = supabase.table("bookings").select("*")\
             .eq("Phone", phone)\
+            .eq("Booking ID", session_booking_id)\
             .gte("Date", today)\
             .neq("Status", "Cancelled")\
             .order("Date")\
             .execute()
         return res.data or []
-    except: return []
+    except Exception:
+        return []
 
 def find_booking_by_phone(phone: str) -> Optional[dict]:
     bookings = find_bookings_by_phone(phone)
@@ -825,37 +818,20 @@ def list_chat_sessions(user=Depends(verify_token), limit: int = 100):
         )
         return res.data or []
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 @router.post("/owner")
 def owner_chat(req: OwnerChatRequest, user=Depends(verify_token)):
     try:
-        if req.context:
-            bookings = req.context.get("bookings", [])
-            leads = req.context.get("leads", [])
-            revenue = req.context.get("revenue", 0)
-            today = str(date.today())
-            context = f"""
-=== FixPro iPhone Repair — Live Data (as of {today}) ===
+        context = build_owner_context()
 
-BOOKINGS ({len(bookings)} total):
-{chr(10).join([f"- {b.get('Date')} {b.get('Time')} | {b.get('Name')} | {b.get('Phone')} | {b.get('Device')} | {b.get('Service')} | {b.get('Status')} | {b.get('Payment Status')}" for b in bookings[:30]]) or "None"}
-
-REVENUE (confirmed bookings): Rs{revenue:,}
-
-LEADS ({len(leads)} total):
-{chr(10).join([f"- {l.get('Name')} | {l.get('Phone')} | {l.get('Device')} | {l.get('Issue')}" for l in leads[:10]]) or "None"}
-""".strip()
-        else:
-            context = build_owner_context()
-
-        system_prompt = f"""You are FixPro Assistant — the smartest employee at FixPro iPhone Repair in Lahore.
+        system_prompt = f"""You are the Slippy Goalz Arena assistant for the owner.
 
 RULES:
 - You have REAL live shop data below. ALWAYS use it to answer. Never say you don't have access.
 - Give SPECIFIC answers using actual names, numbers, dates from the data.
 - If owner asks "who hasn't paid" — list actual names and phones.
-- If owner asks "today's bookings" — list them with time, name, device.
+- If owner asks "today's bookings" — list them with time and name.
 - Be concise and direct. No fluff.
 - Language: Roman Urdu input → Roman Urdu reply. English input → English reply.
 
@@ -864,26 +840,42 @@ RULES:
 {context}"""
 
         messages = [{"role": "system", "content": system_prompt}]
-        messages += [{"role": m.role, "content": m.content} for m in req.messages]
+        messages += [
+            {
+                "role": m.role if m.role in ("user", "assistant") else "user",
+                "content": (m.content or "")[:2000],
+            }
+            for m in (req.messages or [])[-20:]
+        ]
         res = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages, max_tokens=600, temperature=0.4, timeout=15)
         return {"reply": res.choices[0].message.content}
     except Exception as e:
         logger.error(f"Owner chat failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CUSTOMER CHAT
 # ══════════════════════════════════════════════════════════════════════════════
 @router.post("/customer")
-def customer_chat(req: CustomerChatRequest):
-    session_id = req.session_id or str(uuid.uuid4())
-
-    if is_rate_limited(session_id):
-        return respond(
-            "You're sending messages a bit fast! Please wait a moment and try again. 😊",
-            session_id, typing_delay_ms=0
+def customer_chat(req: CustomerChatRequest, request: Request):
+    try:
+        _chat_ip_limiter.check_or_raise(
+            client_ip(request),
+            detail="You're sending messages a bit fast. Please wait a moment.",
         )
+    except HTTPException as e:
+        if e.status_code == 429:
+            return respond(
+                "You're sending messages a bit fast! Please wait a moment and try again. 😊",
+                req.session_id or "rate-limited",
+                typing_delay_ms=0,
+            )
+        raise
+
+    session_id = (req.session_id or "").strip() or str(uuid.uuid4())
+    if len(session_id) > 80:
+        session_id = str(uuid.uuid4())
 
     session = get_session(session_id)
     logger.info(f"[{session_id}] step={session.get('step')} msg={req.message[:80]!r}")
@@ -999,7 +991,7 @@ def _handle_customer_message(req: CustomerChatRequest, session_id: str, session:
                       "درست فون نمبر درج کریں", lang),
                     session_id
                 )
-            bookings = find_bookings_by_phone(formatted)
+            bookings = find_bookings_by_phone(formatted, session.get("booking_id"))
             if not bookings:
                 reset_session(session_id)
                 return respond(
@@ -1070,7 +1062,7 @@ def _handle_customer_message(req: CustomerChatRequest, session_id: str, session:
                       "درست فون نمبر درج کریں", lang),
                     session_id
                 )
-            bookings = find_bookings_by_phone(formatted)
+            bookings = find_bookings_by_phone(formatted, session.get("booking_id"))
             if not bookings:
                 reset_session(session_id)
                 return respond(

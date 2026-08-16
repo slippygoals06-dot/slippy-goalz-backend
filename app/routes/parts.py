@@ -16,6 +16,7 @@ from web3 import Web3
 from app.auth import verify_token
 from app.blockchain import add_checkpoint, get_latest_hash
 from app.config import SUPABASE_KEY, SUPABASE_URL
+from app.errors import http_500
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -173,7 +174,7 @@ def receive_parts(body: ReceivePartsBody, user=Depends(verify_token)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 @router.post("/install")
@@ -247,7 +248,7 @@ def install_parts(body: InstallPartsBody, user=Depends(verify_token)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 @router.get("/{batch_number}/qrcode")
@@ -261,7 +262,7 @@ def get_batch_qrcode(batch_number: str):
         buf.seek(0)
         return StreamingResponse(buf, media_type="image/png")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"QR code generation failed: {e}")
+        raise http_500(e)
 
 
 @router.get("/{batch_number}/verify")
@@ -280,15 +281,12 @@ def verify_batch(batch_number: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch part events: {e}")
+        raise http_500(e)
 
     try:
         on_chain_hash = get_latest_hash(batch_number)
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Blockchain verification failed: {e}",
-        )
+        raise http_500(e)
 
     latest_hash = events[-1]["data_hash"] if events else None
     verified = (
@@ -307,7 +305,7 @@ def verify_batch(batch_number: str):
             {
                 "event_type": e["event_type"],
                 "location": e.get("location"),
-                "repair_id": e.get("repair_id"),
+                "repair_id": None,
                 "timestamp": e.get("created_at"),
             }
             for e in events

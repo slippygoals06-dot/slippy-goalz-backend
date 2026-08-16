@@ -1,3 +1,4 @@
+from html import escape
 import os
 from datetime import datetime, timedelta
 import resend
@@ -25,8 +26,8 @@ def send_email(to_email: str, subject: str, html_body: str):
 def send_booking_confirmation(customer_email: str, business_name: str, service: str, appointment_time: datetime):
     subject = f"Appointment Confirmed - {business_name}"
     html = f"""
-    <p>Hi! Your <strong>{service}</strong> appointment at <strong>{business_name}</strong> is confirmed for:</p>
-    <p><strong>{appointment_time.strftime('%A, %b %d at %I:%M %p')}</strong></p>
+    <p>Hi! Your <strong>{escape(str(service))}</strong> appointment at <strong>{escape(str(business_name))}</strong> is confirmed for:</p>
+    <p><strong>{escape(appointment_time.strftime('%A, %b %d at %I:%M %p'))}</strong></p>
     <p>Reply to this email if you need to reschedule.</p>
     """
     send_email(customer_email, subject, html)
@@ -41,7 +42,7 @@ def schedule_reminder(customer_email: str, business_name: str, service: str, app
 
     subject = f"Reminder: Your appointment tomorrow - {business_name}"
     html = f"""
-    <p>Just a reminder — your <strong>{service}</strong> appointment at <strong>{business_name}</strong> is tomorrow at <strong>{appointment_time.strftime('%I:%M %p')}</strong>.</p>
+    <p>Just a reminder — your <strong>{escape(str(service))}</strong> appointment at <strong>{escape(str(business_name))}</strong> is tomorrow at <strong>{escape(appointment_time.strftime('%I:%M %p'))}</strong>.</p>
     <p>See you then!</p>
     """
     scheduler.add_job(

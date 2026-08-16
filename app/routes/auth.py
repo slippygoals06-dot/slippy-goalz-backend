@@ -8,6 +8,7 @@ from supabase import create_client
 from app.auth import verify_password, hash_password, create_access_token, verify_token
 from app.config import OWNER_USERNAME, OWNER_PASSWORD, SUPABASE_URL, SUPABASE_KEY
 from app.rate_limit import SlidingWindowRateLimiter, client_ip
+from app.errors import http_500
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -72,7 +73,7 @@ def _get_pin_hash(username: str) -> Optional[str]:
             return None
         return res.data[0].get("pin_hash") or None
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 def _check_pin_rate(username: str) -> None:
@@ -145,7 +146,7 @@ def set_pin(req: PinSetRequest, user=Depends(verify_token)):
         }).execute()
         return {"ok": True, "pin_set": True}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 @router.post("/pin/clear")
@@ -161,7 +162,7 @@ def clear_pin(req: PinClearRequest, user=Depends(verify_token)):
         }).execute()
         return {"ok": True, "pin_set": False}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 @router.post("/pin/verify")

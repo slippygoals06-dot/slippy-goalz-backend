@@ -8,12 +8,12 @@ from fastapi import HTTPException, Request
 
 
 def client_ip(request: Request) -> str:
-    """Best-effort client IP (honours X-Forwarded-For behind Railway proxy)."""
+    """Client IP behind a single trusted proxy (Railway appends the real hop)."""
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        first = forwarded.split(",")[0].strip()
-        if first:
-            return first
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
     if request.client and request.client.host:
         return request.client.host
     return "unknown"

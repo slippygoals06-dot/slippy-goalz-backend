@@ -2,14 +2,20 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
 from pydantic import BaseModel, field_validator
 from supabase import create_client
 
 from app.auth import verify_token
-from app.config import SUPABASE_URL, SUPABASE_KEY
+from app.config import ALGORITHM, OWNER_USERNAME, SECRET_KEY, SUPABASE_URL, SUPABASE_KEY
+from app.errors import http_500
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+_optional_bearer = HTTPBearer(auto_error=False)
+
+_PUBLIC_SLOT_FIELDS = ("id", "Date", "Time", "Day", "Status")
 
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
@@ -76,12 +82,25 @@ class BulkCreateBody(BaseModel):
 
 
 @router.get("/")
-def get_slots():
+def get_slots(creds: Optional[HTTPAuthorizationCredentials] = Depends(_optional_bearer)):
+    """Public callers get Date/Time/Status only. Owner JWT gets full rows."""
     try:
         res = supabase.table("slots").select("*").order("Date").execute()
-        return res.data
+        rows = res.data or []
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
+
+    owner = False
+    if creds and creds.credentials:
+        try:
+            payload = jwt.decode(creds.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+            owner = payload.get("sub") == OWNER_USERNAME
+        except JWTError:
+            owner = False
+
+    if owner:
+        return rows
+    return [{k: row.get(k) for k in _PUBLIC_SLOT_FIELDS} for row in rows]
 
 
 @router.post("/")
@@ -138,7 +157,7 @@ def create_slot(slot: SlotCreate, user=Depends(verify_token)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 @router.post("/bulk")
@@ -221,7 +240,7 @@ def update_slot(slot_id: str, slot: SlotUpdate, user=Depends(verify_token)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 @router.delete("/{slot_id}")
@@ -232,4 +251,4 @@ def delete_slot(slot_id: str, user=Depends(verify_token)):
             res = supabase.table("slots").delete().eq("ID", slot_id).execute()
         return {"ok": True, "deleted": res.data or []}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)

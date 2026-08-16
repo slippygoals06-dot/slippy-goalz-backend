@@ -11,6 +11,7 @@ from supabase import create_client
 
 from app.auth import verify_token
 from app.config import SUPABASE_URL, SUPABASE_KEY
+from app.errors import http_500
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -122,7 +123,7 @@ def connect_whatsapp(body: WhatsAppConnectRequest, user=Depends(verify_token)):
             .execute()
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
     saved: Optional[Dict[str, Any]] = res.data[0] if res.data else None
     return {
@@ -149,7 +150,7 @@ def whatsapp_status(user=Depends(verify_token)):
             .execute()
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
     rows = res.data or []
     if not rows:

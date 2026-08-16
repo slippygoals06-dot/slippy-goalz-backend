@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from supabase import create_client
 from app.config import SUPABASE_URL, SUPABASE_KEY
 from app.auth import verify_token
+from app.errors import http_500
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -77,7 +78,7 @@ def list_audit_events(
                     "Run migrations/006_audit_events.sql in the Supabase SQL Editor, then Retry."
                 ),
             )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 @router.get("/setup-sql")

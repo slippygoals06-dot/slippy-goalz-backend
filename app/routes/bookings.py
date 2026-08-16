@@ -3,13 +3,14 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from supabase import create_client
 
 from app.appointment_time import parse_appointment_datetime
 from app.audit import log_audit_event
 from app.auth import verify_token
 from app.config import SUPABASE_URL, SUPABASE_KEY
+from app.errors import http_500
 from app.phone import normalize_phone
 from app.pricing import calculate_booking_amount
 from app.rate_limit import SlidingWindowRateLimiter, client_ip
@@ -20,28 +21,37 @@ router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # your business name - hardcode for now, or pull from a settings table later
-BUSINESS_NAME = "Slippy Goalz"
+BUSINESS_NAME = "Slippy Goalz Arena"
 
 # 5 booking creates per IP per 60s (spam protection; one real booking is fine)
 _booking_limiter = SlidingWindowRateLimiter(max_requests=5, window_seconds=60)
 
 _EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
+SERVICE_LABEL = "Pitch booking"
+
+
+def normalize_payment_mode(value: Optional[str]) -> str:
+    raw = str(value or "").strip().lower()
+    if raw == "online":
+        return "Online"
+    return "Cash"
 
 
 class Booking(BaseModel):
-    name: str
-    phone: str
-    email: Optional[str] = None
-    device: Optional[str] = None
-    service: Optional[str] = None
-    issue: Optional[str] = None
-    date: str
-    time: str
-    status: Optional[str] = "Pending"
-    payment_status: Optional[str] = "Unpaid"
-    notes: Optional[str] = None
-    amount: Optional[float] = None  # ignored on create — server recalculates
-    source: Optional[str] = None
+    name: str = Field(..., min_length=1, max_length=80)
+    phone: str = Field(..., min_length=10, max_length=24)
+    email: Optional[str] = Field(None, max_length=120)
+    device: Optional[str] = Field(None, max_length=40)
+    service: Optional[str] = Field(None, max_length=80)
+    issue: Optional[str] = Field(None, max_length=80)
+    payment_mode: Optional[str] = Field(None, max_length=16)
+    date: str = Field(..., min_length=1, max_length=32)
+    time: str = Field(..., min_length=1, max_length=32)
+    status: Optional[str] = None
+    payment_status: Optional[str] = None
+    notes: Optional[str] = Field(None, max_length=500)
+    amount: Optional[float] = None
+    source: Optional[str] = Field(None, max_length=40)
 
     @field_validator("email", mode="before")
     @classmethod
@@ -90,7 +100,7 @@ def get_bookings(user=Depends(verify_token)):
         res = supabase.table("bookings").select("*").order("Date", desc=True).execute()
         return res.data  # plain array
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 @router.get("/{booking_id}/history")
 def get_booking_history(booking_id: str, user=Depends(verify_token)):
@@ -109,7 +119,7 @@ def get_booking_history(booking_id: str, user=Depends(verify_token)):
         # history is already chronological; no per-message timestamps stored
         return history
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 @router.get("/{booking_id}")
 def get_booking(booking_id: str, user=Depends(verify_token)):
@@ -121,7 +131,7 @@ def get_booking(booking_id: str, user=Depends(verify_token)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 @router.post("/")
 def create_booking(booking: Booking, request: Request):
@@ -174,6 +184,8 @@ def create_booking(booking: Booking, request: Request):
         # Never trust client amount — recalculate from tier pricing when possible
         server_amount = calculate_booking_amount(booking.device, booking.service)
 
+        payment_mode = normalize_payment_mode(booking.payment_mode or booking.issue)
+
         slot_id = claimed.get("id")
         booking_id = f"CUST-{uuid.uuid4().hex[:8].upper()}"
         data = {
@@ -182,12 +194,12 @@ def create_booking(booking: Booking, request: Request):
             "Phone": phone,
             "Email": booking.email,
             "Device": booking.device,
-            "Service": booking.service,
-            "Issue": booking.issue,
+            "Service": booking.service or SERVICE_LABEL,
+            "Issue": payment_mode,
             "Date": booking_date,
             "Time": booking_time,
-            "Status": booking.status,
-            "Payment Status": booking.payment_status,
+            "Status": "Pending",
+            "Payment Status": "Unpaid",
             "Notes": booking.notes,
         }
         if server_amount is not None:
@@ -233,7 +245,7 @@ def create_booking(booking: Booking, request: Request):
         raise
     except Exception as e:
         # Surface Pydantic-style validation messages cleanly if raised as ValueError
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 @router.put("/{booking_id}")
 def update_booking(booking_id: str, booking: BookingUpdate, user=Depends(verify_token)):
@@ -264,7 +276,7 @@ def update_booking(booking_id: str, booking: BookingUpdate, user=Depends(verify_
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 @router.put("/{booking_id}/status")
 def update_booking_status(booking_id: str, body: StatusUpdate, user=Depends(verify_token)):
@@ -309,7 +321,7 @@ def update_booking_status(booking_id: str, body: StatusUpdate, user=Depends(veri
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 @router.put("/{booking_id}/payment")
 def update_booking_payment(booking_id: str, body: PaymentUpdate, user=Depends(verify_token)):
@@ -348,7 +360,7 @@ def update_booking_payment(booking_id: str, body: PaymentUpdate, user=Depends(ve
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 @router.delete("/{booking_id}")
 def delete_booking(booking_id: str, user=Depends(verify_token)):
@@ -377,4 +389,4 @@ def delete_booking(booking_id: str, user=Depends(verify_token)):
         )
         return {"message": "Booking deleted"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)

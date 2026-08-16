@@ -4,6 +4,7 @@ from typing import Literal
 from supabase import create_client
 from app.config import SUPABASE_URL, SUPABASE_KEY
 from app.auth import verify_token
+from app.errors import http_500
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -40,7 +41,7 @@ def list_cash_ledger(
         )
         return res.data or []
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 @router.post("/")
@@ -62,4 +63,4 @@ def create_cash_ledger_entry(body: CashLedgerCreate, user=Depends(verify_token))
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)

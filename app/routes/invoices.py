@@ -13,12 +13,13 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
 from app.config import SUPABASE_URL, SUPABASE_KEY
 from app.auth import verify_token
+from app.errors import http_500
 from app.audit import log_audit_event
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-BUSINESS_NAME = "iRepair"
+BUSINESS_NAME = "Slippy Goalz Arena"
 BUSINESS_TAGLINE = "Phone Repair Services"
 
 
@@ -80,7 +81,7 @@ def list_invoices(user=Depends(verify_token)):
         invoices = res.data or []
         return [_enrich_invoice(inv) for inv in invoices]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 @router.post("/from-booking/{booking_id}")
@@ -145,7 +146,7 @@ def complete_and_invoice(booking_id: str, body: CompleteBookingBody, user=Depend
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 @router.get("/{invoice_id}")
@@ -155,7 +156,7 @@ def get_invoice(invoice_id: str, user=Depends(verify_token)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 @router.put("/{invoice_id}/status")
@@ -190,7 +191,7 @@ def update_invoice_status(invoice_id: str, body: InvoiceStatusUpdate, user=Depen
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
 
 
 def _build_invoice_pdf(invoice: dict, booking: Optional[dict]) -> BytesIO:
@@ -366,4 +367,4 @@ def download_invoice_pdf(invoice_id: str, user=Depends(verify_token)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise http_500(e)
