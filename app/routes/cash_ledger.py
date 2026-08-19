@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from typing import Literal
 from supabase import create_client
 from app.config import SUPABASE_URL, SUPABASE_KEY
-from app.auth import verify_token
+from app.auth import require_perm
 from app.errors import http_500
 
 router = APIRouter()
@@ -28,7 +28,7 @@ def _signed_amount(entry_type: str, amount: float) -> float:
 
 @router.get("/")
 def list_cash_ledger(
-    user=Depends(verify_token),
+    user=Depends(require_perm("cash")),
     limit: int = Query(200, ge=1, le=500),
 ):
     try:
@@ -45,7 +45,7 @@ def list_cash_ledger(
 
 
 @router.post("/")
-def create_cash_ledger_entry(body: CashLedgerCreate, user=Depends(verify_token)):
+def create_cash_ledger_entry(body: CashLedgerCreate, user=Depends(require_perm("cash"))):
     reason = (body.reason or "").strip()
     if not reason:
         raise HTTPException(status_code=400, detail="reason is required")

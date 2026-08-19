@@ -5,8 +5,35 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 from typing import Optional
 from supabase import create_client
-from app.auth import verify_password, hash_password, create_access_token, verify_token
-from app.config import OWNER_USERNAME, OWNER_PASSWORD, SUPABASE_URL, SUPABASE_KEY
+from app.auth import (
+    verify_password,
+    hash_password,
+    create_access_token,
+    verify_token,
+    require_owner,
+    current_auth,
+)
+from app.config import (
+    OWNER_USERNAME,
+    OWNER_PASSWORD,
+    STAFF_USERNAME,
+    STAFF_PASSWORD,
+    SUPABASE_URL,
+    SUPABASE_KEY,
+)
+from app.staff import (
+    ASSIGNABLE_PERMISSIONS,
+    DEFAULT_STAFF_PERMISSIONS,
+    SETUP_SQL,
+    create_staff_row,
+    get_staff_row,
+    list_staff_rows,
+    permissions_for_username,
+    public_member,
+    set_staff_active,
+    set_staff_permissions,
+    table_missing,
+)
 from app.rate_limit import SlidingWindowRateLimiter, client_ip
 from app.errors import http_500
 
@@ -15,8 +42,10 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Store hashed password (from env — unchanged)
 HASHED_PASSWORD = hash_password(OWNER_PASSWORD)
+HASHED_STAFF_PASSWORD = hash_password(STAFF_PASSWORD) if STAFF_USERNAME and STAFF_PASSWORD else None
 
 PIN_RE = re.compile(r"^\d{4,6}$")
+USERNAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{2,31}$")
 MAX_PIN_ATTEMPTS = 5
 PIN_LOCKOUT_SECONDS = 15 * 60
 
@@ -47,6 +76,20 @@ class PinVerifyRequest(BaseModel):
 
 class UnlockPasswordRequest(BaseModel):
     password: str
+
+
+class StaffCreateRequest(BaseModel):
+    username: str
+    password: str
+    permissions: Optional[list] = None
+
+
+class StaffActiveRequest(BaseModel):
+    is_active: bool
+
+
+class StaffPermissionsRequest(BaseModel):
+    permissions: list
 
 
 def _now_iso() -> str:
@@ -100,22 +143,209 @@ def _clear_pin_attempts(username: str) -> None:
     _pin_attempts.pop(username, None)
 
 
+def _normalize_username(raw: str) -> str:
+    return (raw or "").strip()
+
+
+def _authenticate(username: str, password: str) -> Optional[str]:
+    """Return role if credentials match, else None."""
+    if not username or not password:
+        return None
+    if username == OWNER_USERNAME and verify_password(password, HASHED_PASSWORD):
+        return "owner"
+    if (
+        STAFF_USERNAME
+        and HASHED_STAFF_PASSWORD
+        and username == STAFF_USERNAME
+        and verify_password(password, HASHED_STAFF_PASSWORD)
+    ):
+        return "staff"
+    row = get_staff_row(username)
+    if (
+        row
+        and row.get("is_active")
+        and row.get("password_hash")
+        and verify_password(password, row["password_hash"])
+    ):
+        return "staff"
+    return None
+
+
+def _password_hash_for_user(username: str) -> Optional[str]:
+    if username == OWNER_USERNAME:
+        return HASHED_PASSWORD
+    if STAFF_USERNAME and username == STAFF_USERNAME:
+        return HASHED_STAFF_PASSWORD
+    row = get_staff_row(username)
+    if row and row.get("is_active"):
+        return row.get("password_hash")
+    return None
+
+
 @router.post("/login")
 def login(req: LoginRequest, request: Request):
     _login_limiter.check_or_raise(
         client_ip(request),
         detail="Too many attempts, try again later",
     )
-    if req.username != OWNER_USERNAME:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not verify_password(req.password, HASHED_PASSWORD):
+    username = _normalize_username(req.username)
+    role = _authenticate(username, req.password)
+    if not role:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = create_access_token({"sub": req.username})
+    token = create_access_token({"sub": username, "role": role})
     return {
         "access_token": token,
         "token_type": "bearer",
+        "username": username,
+        "role": role,
+        "permissions": permissions_for_username(username, role),
         "message": "Login successful",
+    }
+
+
+@router.get("/me")
+def me(auth=Depends(current_auth)):
+    return {
+        "username": auth["username"],
+        "role": auth["role"],
+        "permissions": auth.get("permissions") or [],
+    }
+
+
+def _member_owner():
+    return {
+        "username": OWNER_USERNAME,
+        "role": "owner",
+        "is_active": True,
+        "source": "env",
+        "can_disable": False,
+        "can_edit_permissions": False,
+        "permissions": list(ASSIGNABLE_PERMISSIONS),
+    }
+
+
+def _member_env_staff():
+    if not STAFF_USERNAME or not HASHED_STAFF_PASSWORD:
+        return None
+    return {
+        "username": STAFF_USERNAME,
+        "role": "staff",
+        "is_active": True,
+        "source": "env",
+        "can_disable": False,
+        "can_edit_permissions": False,
+        "permissions": list(DEFAULT_STAFF_PERMISSIONS),
+    }
+
+
+@router.get("/staff")
+def list_staff(user=Depends(require_owner)):
+    members = [_member_owner()]
+    env_staff = _member_env_staff()
+    if env_staff:
+        members.append(env_staff)
+    try:
+        for row in list_staff_rows():
+            uname = row.get("username")
+            if not uname or uname == OWNER_USERNAME or (STAFF_USERNAME and uname == STAFF_USERNAME):
+                continue
+            members.append(public_member(row, source="database", can_disable=True))
+    except Exception as e:
+        if not table_missing(e):
+            raise http_500(e)
+    return {"members": members}
+
+
+@router.post("/staff")
+def create_staff(req: StaffCreateRequest, user=Depends(require_owner)):
+    username = _normalize_username(req.username)
+    if not USERNAME_RE.match(username):
+        raise HTTPException(
+            status_code=400,
+            detail="Username must start with a letter and be 3–32 letters, numbers, or underscores.",
+        )
+    if username == OWNER_USERNAME or (STAFF_USERNAME and username == STAFF_USERNAME):
+        raise HTTPException(status_code=400, detail="That username is already in use")
+    password = req.password or ""
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if get_staff_row(username):
+        raise HTTPException(status_code=400, detail="That username is already in use")
+    try:
+        member = create_staff_row(
+            username,
+            hash_password(password),
+            permissions=req.permissions,
+        )
+        member["can_disable"] = True
+        return member
+    except Exception as e:
+        if table_missing(e):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Staff accounts table is missing. Run migrations/014_staff_users.sql "
+                    "in the Supabase SQL Editor, then try again."
+                ),
+            )
+        raise http_500(e)
+
+
+@router.post("/staff/{username}/active")
+def set_staff_member_active(
+    username: str,
+    req: StaffActiveRequest,
+    user=Depends(require_owner),
+):
+    username = _normalize_username(username)
+    if username == OWNER_USERNAME or (STAFF_USERNAME and username == STAFF_USERNAME):
+        raise HTTPException(status_code=400, detail="This account cannot be disabled here")
+    try:
+        row = set_staff_active(username, bool(req.is_active))
+    except Exception as e:
+        if table_missing(e):
+            raise HTTPException(status_code=503, detail="Staff accounts table is missing")
+        raise http_500(e)
+    if not row:
+        raise HTTPException(status_code=404, detail="Staff account not found")
+    row["can_disable"] = True
+    return row
+
+
+@router.post("/staff/{username}/permissions")
+def set_staff_member_permissions(
+    username: str,
+    req: StaffPermissionsRequest,
+    user=Depends(require_owner),
+):
+    username = _normalize_username(username)
+    if username == OWNER_USERNAME or (STAFF_USERNAME and username == STAFF_USERNAME):
+        raise HTTPException(status_code=400, detail="This account's access cannot be changed here")
+    try:
+        row = set_staff_permissions(username, req.permissions)
+    except Exception as e:
+        if table_missing(e):
+            raise HTTPException(status_code=503, detail="Staff accounts table is missing")
+        raise HTTPException(
+            status_code=503,
+            detail="Run migrations/014_staff_users.sql in the Supabase SQL Editor so staff permissions can be saved.",
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Staff account not found")
+    return row
+
+
+@router.get("/staff/setup-sql")
+def staff_setup_sql(user=Depends(require_owner)):
+    return {
+        "filename": "014_staff_users.sql",
+        "sql": SETUP_SQL,
+        "instructions": [
+            "Open the Supabase SQL Editor",
+            "Paste and run this SQL",
+            "Return to Settings → Team and add a staff account",
+        ],
     }
 
 
@@ -133,7 +363,7 @@ def pin_status(user=Depends(verify_token)):
 
 
 @router.post("/pin/set")
-def set_pin(req: PinSetRequest, user=Depends(verify_token)):
+def set_pin(req: PinSetRequest, user=Depends(require_owner)):
     """Set or replace Quick PIN. Requires current owner password."""
     if not verify_password(req.password, HASHED_PASSWORD):
         raise HTTPException(status_code=401, detail="Invalid password")
@@ -150,7 +380,7 @@ def set_pin(req: PinSetRequest, user=Depends(verify_token)):
 
 
 @router.post("/pin/clear")
-def clear_pin(req: PinClearRequest, user=Depends(verify_token)):
+def clear_pin(req: PinClearRequest, user=Depends(require_owner)):
     """Remove Quick PIN (reverts idle behavior to hard logout)."""
     if not verify_password(req.password, HASHED_PASSWORD):
         raise HTTPException(status_code=401, detail="Invalid password")
@@ -195,9 +425,10 @@ def verify_pin(req: PinVerifyRequest, user=Depends(verify_token)):
 
 @router.post("/pin/unlock-password")
 def unlock_with_password(req: UnlockPasswordRequest, user=Depends(verify_token)):
-    """Fallback unlock with owner password (does not issue a new JWT)."""
+    """Fallback unlock with this account's password (does not issue a new JWT)."""
     _check_pin_rate(user)
-    if not verify_password(req.password, HASHED_PASSWORD):
+    hashed = _password_hash_for_user(user)
+    if not hashed or not verify_password(req.password, hashed):
         result = _record_pin_fail(user)
         if result["locked"]:
             raise HTTPException(

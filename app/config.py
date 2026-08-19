@@ -10,6 +10,11 @@ SECRET_KEY = os.getenv("SECRET_KEY") or ""
 ALGORITHM = "HS256"
 OWNER_USERNAME = os.getenv("OWNER_USERNAME") or ""
 OWNER_PASSWORD = os.getenv("OWNER_PASSWORD") or ""
+STAFF_USERNAME = (os.getenv("STAFF_USERNAME") or "").strip()
+STAFF_PASSWORD = os.getenv("STAFF_PASSWORD") or ""
+if STAFF_USERNAME and STAFF_USERNAME == OWNER_USERNAME:
+    STAFF_USERNAME = ""
+    STAFF_PASSWORD = ""
 
 _ENV = (os.getenv("ENV") or os.getenv("RAILWAY_ENVIRONMENT") or "").strip().lower()
 IS_PRODUCTION = _ENV in ("production", "prod") or bool(os.getenv("RAILWAY_ENVIRONMENT_NAME"))

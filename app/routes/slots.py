@@ -3,12 +3,11 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
 from pydantic import BaseModel, field_validator
 from supabase import create_client
 
-from app.auth import verify_token
-from app.config import ALGORITHM, OWNER_USERNAME, SECRET_KEY, SUPABASE_URL, SUPABASE_KEY
+from app.auth import parse_token, verify_token
+from app.config import SUPABASE_URL, SUPABASE_KEY
 from app.errors import http_500
 
 router = APIRouter()
@@ -83,22 +82,15 @@ class BulkCreateBody(BaseModel):
 
 @router.get("/")
 def get_slots(creds: Optional[HTTPAuthorizationCredentials] = Depends(_optional_bearer)):
-    """Public callers get Date/Time/Status only. Owner JWT gets full rows."""
+    """Public callers get Date/Time/Status only. Logged-in staff/owner get full rows."""
     try:
         res = supabase.table("slots").select("*").order("Date").execute()
         rows = res.data or []
     except Exception as e:
         raise http_500(e)
 
-    owner = False
-    if creds and creds.credentials:
-        try:
-            payload = jwt.decode(creds.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-            owner = payload.get("sub") == OWNER_USERNAME
-        except JWTError:
-            owner = False
-
-    if owner:
+    dashboard_user = bool(creds and creds.credentials and parse_token(creds.credentials))
+    if dashboard_user:
         return rows
     return [{k: row.get(k) for k in _PUBLIC_SLOT_FIELDS} for row in rows]
 

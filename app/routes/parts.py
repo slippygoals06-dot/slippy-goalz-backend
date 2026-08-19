@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from supabase import create_client
 from web3 import Web3
 
-from app.auth import verify_token
+from app.auth import require_owner
 from app.blockchain import add_checkpoint, get_latest_hash
 from app.config import SUPABASE_KEY, SUPABASE_URL
 from app.errors import http_500
@@ -96,7 +96,7 @@ def _require_booking(repair_id: str) -> None:
 
 
 @router.post("/receive")
-def receive_parts(body: ReceivePartsBody, user=Depends(verify_token)):
+def receive_parts(body: ReceivePartsBody, user=Depends(require_owner)):
     supplier_name = body.supplier_name.strip()
     batch_number = body.batch_number.strip()
     part_type = body.part_type.strip()
@@ -178,7 +178,7 @@ def receive_parts(body: ReceivePartsBody, user=Depends(verify_token)):
 
 
 @router.post("/install")
-def install_parts(body: InstallPartsBody, user=Depends(verify_token)):
+def install_parts(body: InstallPartsBody, user=Depends(require_owner)):
     batch_number = body.batch_number.strip()
     repair_id = body.repair_id.strip()
     location = body.location.strip()

@@ -12,7 +12,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
 from app.config import SUPABASE_URL, SUPABASE_KEY
-from app.auth import verify_token
+from app.auth import require_perm
 from app.errors import http_500
 from app.audit import log_audit_event
 
@@ -70,7 +70,7 @@ def _enrich_invoice(inv: dict) -> dict:
 
 
 @router.get("/")
-def list_invoices(user=Depends(verify_token)):
+def list_invoices(user=Depends(require_perm("invoices"))):
     try:
         res = (
             supabase.table("invoices")
@@ -85,7 +85,7 @@ def list_invoices(user=Depends(verify_token)):
 
 
 @router.post("/from-booking/{booking_id}")
-def complete_and_invoice(booking_id: str, body: CompleteBookingBody, user=Depends(verify_token)):
+def complete_and_invoice(booking_id: str, body: CompleteBookingBody, user=Depends(require_perm("invoices"))):
     """
     Mark booking Completed and create an invoice.
     Amount can override the booking's saved amount.
@@ -150,7 +150,7 @@ def complete_and_invoice(booking_id: str, body: CompleteBookingBody, user=Depend
 
 
 @router.get("/{invoice_id}")
-def get_invoice(invoice_id: str, user=Depends(verify_token)):
+def get_invoice(invoice_id: str, user=Depends(require_perm("invoices"))):
     try:
         return _enrich_invoice(_fetch_invoice(invoice_id))
     except HTTPException:
@@ -160,7 +160,7 @@ def get_invoice(invoice_id: str, user=Depends(verify_token)):
 
 
 @router.put("/{invoice_id}/status")
-def update_invoice_status(invoice_id: str, body: InvoiceStatusUpdate, user=Depends(verify_token)):
+def update_invoice_status(invoice_id: str, body: InvoiceStatusUpdate, user=Depends(require_perm("invoices"))):
     status = (body.status or "").lower().strip()
     if status not in ("paid", "unpaid"):
         raise HTTPException(status_code=400, detail="status must be 'paid' or 'unpaid'")
@@ -348,7 +348,7 @@ def _build_invoice_pdf(invoice: dict, booking: Optional[dict]) -> BytesIO:
 
 
 @router.get("/{invoice_id}/pdf")
-def download_invoice_pdf(invoice_id: str, user=Depends(verify_token)):
+def download_invoice_pdf(invoice_id: str, user=Depends(require_perm("invoices"))):
     try:
         invoice = _fetch_invoice(invoice_id)
         booking = None

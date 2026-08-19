@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from supabase import create_client
 from app.config import SUPABASE_URL, SUPABASE_KEY
-from app.auth import verify_token
+from app.auth import require_owner
 from app.errors import http_500
 
 router = APIRouter()
@@ -45,6 +45,28 @@ ALTER TABLE public.audit_events FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.audit_events FROM anon;
 REVOKE ALL ON TABLE public.audit_events FROM authenticated;
 
+CREATE OR REPLACE FUNCTION public.prevent_audit_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'Audit log cannot be changed';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS audit_events_no_update ON public.audit_events;
+DROP TRIGGER IF EXISTS audit_events_no_delete ON public.audit_events;
+
+CREATE TRIGGER audit_events_no_update
+  BEFORE UPDATE ON public.audit_events
+  FOR EACH ROW
+  EXECUTE PROCEDURE public.prevent_audit_mutation();
+
+CREATE TRIGGER audit_events_no_delete
+  BEFORE DELETE ON public.audit_events
+  FOR EACH ROW
+  EXECUTE PROCEDURE public.prevent_audit_mutation();
+
 NOTIFY pgrst, 'reload schema';
 """
 
@@ -56,7 +78,7 @@ def _is_missing_table(err: Exception) -> bool:
 
 @router.get("/")
 def list_audit_events(
-    user=Depends(verify_token),
+    user=Depends(require_owner),
     limit: int = Query(200, ge=1, le=500),
 ):
     """Return recent audit events, newest first."""
@@ -82,7 +104,7 @@ def list_audit_events(
 
 
 @router.get("/setup-sql")
-def audit_setup_sql(user=Depends(verify_token)):
+def audit_setup_sql(user=Depends(require_owner)):
     """Return the SQL required to create the audit_events table."""
     return {
         "filename": "006_audit_events.sql",
@@ -93,3 +115,22 @@ def audit_setup_sql(user=Depends(verify_token)):
             "Return here and click Retry Connection",
         ],
     }
+
+
+def _audit_locked():
+    raise HTTPException(status_code=405, detail="Audit log cannot be changed")
+
+
+@router.post("/")
+@router.put("/")
+@router.patch("/")
+@router.delete("/")
+def audit_collection_locked():
+    return _audit_locked()
+
+
+@router.put("/{event_id}")
+@router.patch("/{event_id}")
+@router.delete("/{event_id}")
+def audit_item_locked(event_id: str):
+    return _audit_locked()

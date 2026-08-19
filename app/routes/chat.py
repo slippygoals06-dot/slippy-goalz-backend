@@ -4,7 +4,7 @@ from typing import Optional, List, Dict
 from groq import Groq
 from supabase import create_client
 from app.config import SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY, BOOKING_PAGE_URL
-from app.auth import verify_token
+from app.auth import verify_token, require_owner
 from app.phone import normalize_phone
 from app.slot_claim import claim_slot, link_slot_booking, release_slot
 from app.errors import http_500
@@ -821,7 +821,7 @@ def list_chat_sessions(user=Depends(verify_token), limit: int = 100):
         raise http_500(e)
 
 @router.post("/owner")
-def owner_chat(req: OwnerChatRequest, user=Depends(verify_token)):
+def owner_chat(req: OwnerChatRequest, user=Depends(require_owner)):
     try:
         context = build_owner_context()
 

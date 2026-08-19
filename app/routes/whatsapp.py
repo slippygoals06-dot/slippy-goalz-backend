@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.auth import verify_token
+from app.auth import verify_token, require_owner
 from app.whatsapp import send_whatsapp_message, send_whatsapp_text
 
 router = APIRouter()
@@ -29,7 +29,7 @@ def _raise_from_result(result: dict) -> None:
 
 
 @router.post("/test-whatsapp")
-def test_whatsapp(body: TestWhatsAppRequest, user=Depends(verify_token)):
+def test_whatsapp(body: TestWhatsAppRequest, user=Depends(require_owner)):
     """Send a template message to verify Cloud API credentials end-to-end."""
     result = send_whatsapp_message(body.to, body.template_name)
     if not result.get("ok"):
