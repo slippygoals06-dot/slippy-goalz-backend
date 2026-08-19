@@ -247,17 +247,8 @@ def create_booking(booking: Booking, request: Request):
 def update_booking(booking_id: str, booking: BookingUpdate, user=Depends(verify_token)):
     try:
         data = {}
-        if booking.name is not None: data["Name"] = booking.name
-        if booking.phone is not None:
-            phone = normalize_phone(booking.phone)
-            if not phone:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid phone number. Use format 03001234567 or +923001234567",
-                )
-            data["Phone"] = phone
-        if booking.email is not None: data["Email"] = booking.email
-        if booking.device is not None: data["Device"] = booking.device
+        # Customer identity fields must be immutable to keep customer history accurate.
+        # We intentionally do NOT update Name/Phone/Email/Device from BookingUpdate.
         if booking.service is not None: data["Service"] = booking.service
         if booking.issue is not None: data["Issue"] = booking.issue
         if booking.date is not None: data["Date"] = booking.date
