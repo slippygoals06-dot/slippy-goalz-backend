@@ -60,30 +60,27 @@ ALTER TABLE public.bookings
 CREATE INDEX IF NOT EXISTS idx_bookings_customer_id ON public.bookings (customer_id);
 
 -- ── Backfill customers from distinct normalized booking phones ────────────────
+-- Use aggregates (not correlated subqueries) so GROUP BY is valid in Postgres.
 INSERT INTO public.customers (phone, name, email, created_at, updated_at)
 SELECT
-  public.normalize_pk_phone(b."Phone") AS phone,
+  n.phone,
+  (array_agg(n.name ORDER BY n.created_at DESC NULLS LAST))[1] AS name,
   (
-    SELECT b2."Name"
-    FROM public.bookings b2
-    WHERE public.normalize_pk_phone(b2."Phone") = public.normalize_pk_phone(b."Phone")
-    ORDER BY b2.created_at DESC NULLS LAST
-    LIMIT 1
-  ) AS name,
-  (
-    SELECT b2."Email"
-    FROM public.bookings b2
-    WHERE public.normalize_pk_phone(b2."Phone") = public.normalize_pk_phone(b."Phone")
-      AND b2."Email" IS NOT NULL
-      AND btrim(b2."Email") <> ''
-    ORDER BY b2.created_at DESC NULLS LAST
-    LIMIT 1
-  ) AS email,
-  MIN(b.created_at) AS created_at,
+    array_agg(n.email ORDER BY n.created_at DESC NULLS LAST)
+      FILTER (WHERE n.email IS NOT NULL AND btrim(n.email) <> '')
+  )[1] AS email,
+  MIN(n.created_at) AS created_at,
   NOW() AS updated_at
-FROM public.bookings b
-WHERE public.normalize_pk_phone(b."Phone") IS NOT NULL
-GROUP BY public.normalize_pk_phone(b."Phone")
+FROM (
+  SELECT
+    public.normalize_pk_phone(b."Phone") AS phone,
+    b."Name" AS name,
+    b."Email" AS email,
+    b.created_at
+  FROM public.bookings b
+) n
+WHERE n.phone IS NOT NULL
+GROUP BY n.phone
 ON CONFLICT (phone) DO NOTHING;
 
 -- Relink bookings to canonical customer (does not change Name/Phone/Email)
