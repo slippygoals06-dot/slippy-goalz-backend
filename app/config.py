@@ -35,3 +35,8 @@ REMINDERS_ENABLED = os.getenv("REMINDERS_ENABLED", "").strip().lower() in (
     "true",
     "yes",
 )
+
+# WhatsApp template for admin Confirm (must be Approved in Meta Business Manager)
+WHATSAPP_CONFIRM_TEMPLATE = (
+    os.getenv("WHATSAPP_CONFIRM_TEMPLATE") or "booking_confirmed"
+).strip()

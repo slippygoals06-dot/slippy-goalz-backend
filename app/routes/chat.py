@@ -1730,6 +1730,31 @@ AVAILABLE DATES (live):
                 booking_date = collected.get("date", "")
                 booking_time = collected.get("time", "")
                 phone = collected.get("phone", "")
+                # Stable key so YES retries do not double-book the same slot intent
+                idem_key = f"chat:{session_id}:{booking_date}:{booking_time}"[:64]
+                try:
+                    existing = (
+                        supabase.table("bookings")
+                        .select("*")
+                        .eq("idempotency_key", idem_key)
+                        .limit(1)
+                        .execute()
+                    )
+                    if existing.data:
+                        booking_id = existing.data[0].get("Booking ID") or ""
+                        booking_info = {**collected, "booking_id": booking_id}
+                        session["booking_id"] = booking_id
+                        reset_session(session_id)
+                        reply = r(
+                            f"🎉 Booking confirmed! Your ID: **{booking_id}**\n\nSee you on {booking_info.get('date')} at {booking_info.get('time')}. Please arrive 5 mins early.",
+                            f"🎉 Booking confirm! ID: **{booking_id}**\n\n{booking_info.get('date')} ko {booking_info.get('time')} baje milenge.",
+                            f"🎉 بکنگ کنفرم! ID: **{booking_id}**",
+                            lang,
+                        )
+                        return respond(reply, session_id)
+                except Exception as lookup_err:
+                    logger.warning(f"Idempotency lookup failed: {lookup_err}")
+
                 booking_id = f"CUST-{uuid.uuid4().hex[:8].upper()}"
 
                 # Claim slot FIRST — reject if another request already took it
@@ -1771,11 +1796,27 @@ AVAILABLE DATES (live):
                         "Status": "Pending",
                         "Payment Status": "Unpaid",
                         "Notes": "[Chatbot] Booked via customer chatbot",
+                        "idempotency_key": idem_key,
                     }
                     if customer_id:
                         booking_row["customer_id"] = customer_id
 
-                    supabase.table("bookings").insert(booking_row).execute()
+                    try:
+                        supabase.table("bookings").insert(booking_row).execute()
+                    except Exception as insert_err:
+                        raced = (
+                            supabase.table("bookings")
+                            .select("*")
+                            .eq("idempotency_key", idem_key)
+                            .limit(1)
+                            .execute()
+                        )
+                        if raced.data:
+                            if slot_id is not None:
+                                release_slot(slot_id)
+                            booking_id = raced.data[0].get("Booking ID") or booking_id
+                        else:
+                            raise insert_err
                     if slot_id is not None:
                         link_slot_booking(slot_id, booking_id)
                     logger.info(f"Booking created: {booking_id} | {phone} | {booking_date} {booking_time}")

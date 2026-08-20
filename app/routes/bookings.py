@@ -8,14 +8,15 @@ from supabase import create_client
 
 from app.appointment_time import parse_appointment_datetime
 from app.audit import log_audit_event
-from app.auth import verify_token, optional_owner
-from app.config import SUPABASE_URL, SUPABASE_KEY
+from app.auth import require_perm, optional_owner
+from app.config import SUPABASE_URL, SUPABASE_KEY, WHATSAPP_CONFIRM_TEMPLATE
 from app.errors import http_500
 from app.customers import find_or_create_customer
 from app.phone import normalize_phone
 from app.rate_limit import SlidingWindowRateLimiter, client_ip
 from app.routes.reminders import send_booking_confirmation, schedule_reminder
 from app.slot_claim import SLOT_UNAVAILABLE_MSG, claim_slot, link_slot_booking, release_slot
+from app.whatsapp import send_whatsapp_message
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -94,8 +95,56 @@ class PaymentUpdate(BaseModel):
     payment_status: str
 
 
+def _normalize_idempotency_key(raw: Optional[str]) -> Optional[str]:
+    if raw is None:
+        return None
+    key = str(raw).strip()
+    if not key:
+        return None
+    if len(key) > 64:
+        raise HTTPException(status_code=400, detail="Idempotency-Key must be at most 64 characters")
+    return key
+
+
+def _booking_by_idempotency_key(key: str) -> Optional[dict]:
+    res = (
+        supabase.table("bookings")
+        .select("*")
+        .eq("idempotency_key", key)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def _send_confirm_whatsapp(booking: dict) -> None:
+    """Best-effort WhatsApp confirmation; never raises into the request."""
+    if booking.get("confirmation_wa_sent"):
+        return
+    phone = booking.get("Phone") or ""
+    if not phone:
+        return
+    name = booking.get("Name") or "customer"
+    date_s = str(booking.get("Date") or "")
+    time_s = str(booking.get("Time") or "")
+    try:
+        result = send_whatsapp_message(
+            phone,
+            WHATSAPP_CONFIRM_TEMPLATE,
+            body_params=[name, date_s, time_s],
+        )
+        if result.get("ok"):
+            supabase.table("bookings").update({"confirmation_wa_sent": True}).eq(
+                "Booking ID", booking.get("Booking ID")
+            ).execute()
+        else:
+            print(f"WhatsApp confirm failed: {result.get('error')}")
+    except Exception as wa_err:
+        print(f"WhatsApp confirm error: {wa_err}")
+
+
 @router.get("/")
-def get_bookings(user=Depends(verify_token)):
+def get_bookings(user=Depends(require_perm("bookings"))):
     try:
         res = supabase.table("bookings").select("*").order("Date", desc=True).execute()
         return res.data  # plain array
@@ -103,7 +152,7 @@ def get_bookings(user=Depends(verify_token)):
         raise http_500(e)
 
 @router.get("/{booking_id}/history")
-def get_booking_history(booking_id: str, user=Depends(verify_token)):
+def get_booking_history(booking_id: str, user=Depends(require_perm("bookings"))):
     """Return the chatbot conversation history linked to this booking (read-only)."""
     try:
         res = (
@@ -122,7 +171,7 @@ def get_booking_history(booking_id: str, user=Depends(verify_token)):
         raise http_500(e)
 
 @router.get("/{booking_id}")
-def get_booking(booking_id: str, user=Depends(verify_token)):
+def get_booking(booking_id: str, user=Depends(require_perm("bookings"))):
     try:
         res = supabase.table("bookings").select("*").eq("Booking ID", booking_id).execute()
         if not res.data:
@@ -140,6 +189,12 @@ def create_booking(booking: Booking, request: Request):
         detail="Too many booking requests. Please wait a moment and try again.",
     )
     try:
+        idem_key = _normalize_idempotency_key(request.headers.get("Idempotency-Key"))
+        if idem_key:
+            existing = _booking_by_idempotency_key(idem_key)
+            if existing:
+                return existing
+
         phone = normalize_phone(booking.phone)
         if not phone:
             raise HTTPException(
@@ -209,6 +264,8 @@ def create_booking(booking: Booking, request: Request):
         }
         if customer and customer.get("id"):
             data["customer_id"] = customer["id"]
+        if idem_key:
+            data["idempotency_key"] = idem_key
         if optional_owner(request) and booking.amount is not None:
             data["amount"] = float(booking.amount)
         if booking.source:
@@ -222,10 +279,16 @@ def create_booking(booking: Booking, request: Request):
                     link_slot_booking(slot_id, booking_id)
                 except Exception as link_err:
                     print(f"Slot Booking ID link failed (booking still saved): {link_err}")
-        except Exception:
+        except Exception as insert_err:
+            if idem_key:
+                raced = _booking_by_idempotency_key(idem_key)
+                if raced:
+                    if slot_id is not None:
+                        release_slot(slot_id)
+                    return raced
             if slot_id is not None:
                 release_slot(slot_id)
-            raise
+            raise insert_err
 
         # --- NEW: send confirmation + schedule reminder ---
         if booking.email:
@@ -255,7 +318,7 @@ def create_booking(booking: Booking, request: Request):
         raise http_500(e)
 
 @router.put("/{booking_id}")
-def update_booking(booking_id: str, booking: BookingUpdate, user=Depends(verify_token)):
+def update_booking(booking_id: str, booking: BookingUpdate, user=Depends(require_perm("bookings"))):
     try:
         data = {}
         # Customer identity fields must be immutable to keep customer history accurate.
@@ -277,7 +340,7 @@ def update_booking(booking_id: str, booking: BookingUpdate, user=Depends(verify_
         raise http_500(e)
 
 @router.put("/{booking_id}/status")
-def update_booking_status(booking_id: str, body: StatusUpdate, user=Depends(verify_token)):
+def update_booking_status(booking_id: str, body: StatusUpdate, user=Depends(require_perm("bookings"))):
     try:
         existing = (
             supabase.table("bookings")
@@ -299,9 +362,11 @@ def update_booking_status(booking_id: str, body: StatusUpdate, user=Depends(veri
         if not res.data:
             raise HTTPException(status_code=404, detail="Booking not found")
 
+        updated = res.data[0]
         action = None
         if body.Status == "Confirmed":
             action = "confirmed"
+            _send_confirm_whatsapp(updated)
         elif body.Status == "Rejected":
             action = "rejected"
         if action:
@@ -315,14 +380,14 @@ def update_booking_status(booking_id: str, body: StatusUpdate, user=Depends(veri
                     "to": body.Status,
                 },
             )
-        return res.data[0]
+        return updated
     except HTTPException:
         raise
     except Exception as e:
         raise http_500(e)
 
 @router.put("/{booking_id}/payment")
-def update_booking_payment(booking_id: str, body: PaymentUpdate, user=Depends(verify_token)):
+def update_booking_payment(booking_id: str, body: PaymentUpdate, user=Depends(require_perm("bookings"))):
     try:
         existing = (
             supabase.table("bookings")
@@ -361,7 +426,7 @@ def update_booking_payment(booking_id: str, body: PaymentUpdate, user=Depends(ve
         raise http_500(e)
 
 @router.delete("/{booking_id}")
-def delete_booking(booking_id: str, user=Depends(verify_token)):
+def delete_booking(booking_id: str, user=Depends(require_perm("bookings"))):
     try:
         existing = (
             supabase.table("bookings")

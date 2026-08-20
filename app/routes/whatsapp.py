@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.auth import verify_token, require_owner
+from app.auth import require_owner, require_perm
 from app.whatsapp import send_whatsapp_message, send_whatsapp_text
 
 router = APIRouter()
@@ -44,7 +44,7 @@ def test_whatsapp(body: TestWhatsAppRequest, user=Depends(require_owner)):
 
 
 @router.post("/whatsapp/send")
-def whatsapp_send_text(body: SendWhatsAppTextRequest, user=Depends(verify_token)):
+def whatsapp_send_text(body: SendWhatsAppTextRequest, user=Depends(require_perm("chats"))):
     """Send a free-form text reply (inbox composer)."""
     result = send_whatsapp_text(body.to, body.text)
     if not result.get("ok"):

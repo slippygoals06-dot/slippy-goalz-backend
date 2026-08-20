@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import httpx
 
@@ -66,15 +66,29 @@ def _post_messages(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": False, "error": msg, "status_code": res.status_code, "data": body}
 
 
+def _template_body_component(body_params: Optional[Sequence[str]]) -> Optional[Dict[str, Any]]:
+    if not body_params:
+        return None
+    params: List[Dict[str, str]] = []
+    for p in body_params:
+        text = str(p if p is not None else "").strip() or "—"
+        params.append({"type": "text", "text": text[:1024]})
+    if not params:
+        return None
+    return {"type": "body", "parameters": params}
+
+
 def send_whatsapp_message(
     to_number: str,
     template_name: str = "hello_world",
     *,
     language_code: str = DEFAULT_LANGUAGE,
+    body_params: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """
     Send a WhatsApp template message via Meta Cloud API.
 
+    Optional body_params map to {{1}}, {{2}}, … in an Approved template body.
     Returns {"ok": True, "data": ...} on success, or
     {"ok": False, "error": "..."} on failure — never raises.
     """
@@ -89,14 +103,19 @@ def send_whatsapp_message(
         logger.warning(msg)
         return {"ok": False, "error": msg}
 
+    template: Dict[str, Any] = {
+        "name": template_name.strip(),
+        "language": {"code": language_code},
+    }
+    component = _template_body_component(body_params)
+    if component:
+        template["components"] = [component]
+
     payload = {
         "messaging_product": "whatsapp",
         "to": to_digits,
         "type": "template",
-        "template": {
-            "name": template_name.strip(),
-            "language": {"code": language_code},
-        },
+        "template": template,
     }
     result = _post_messages(payload)
     if result.get("ok"):

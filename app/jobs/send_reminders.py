@@ -99,7 +99,7 @@ def _process_booking(
     # ── 24h window ──────────────────────────────────────────────────────────
     if _in_window(hours, WINDOW_24H) and not booking.get("reminder_24h_sent"):
         logger.info(
-            "24h candidate %s (%s) — %.2fh until appt",
+            "Arena 24h reminder candidate %s (%s) — %.2fh until pitch session",
             booking_id,
             name,
             hours,
@@ -112,15 +112,19 @@ def _process_booking(
             )
             stats["dry_24h"] += 1
         else:
-            result = send_whatsapp_message(phone, TEMPLATE_24H)
+            result = send_whatsapp_message(
+                phone,
+                TEMPLATE_24H,
+                body_params=[name, str(booking.get("Date") or ""), str(booking.get("Time") or "")],
+            )
             if result.get("ok"):
                 _mark_sent(supabase, booking_id, "reminder_24h_sent")
                 stats["sent_24h"] += 1
-                logger.info("Marked reminder_24h_sent for %s", booking_id)
+                logger.info("Arena 24h reminder sent for %s", booking_id)
             else:
                 stats["errors"] += 1
                 logger.error(
-                    "Failed 24h reminder for %s: %s",
+                    "Failed arena 24h reminder for %s: %s",
                     booking_id,
                     result.get("error"),
                 )
@@ -128,7 +132,7 @@ def _process_booking(
     # ── Urgent window ───────────────────────────────────────────────────────
     if _in_window(hours, WINDOW_URGENT) and not booking.get("reminder_urgent_sent"):
         logger.info(
-            "Urgent candidate %s (%s) — %.2fh until appt",
+            "Arena urgent reminder candidate %s (%s) — %.2fh until pitch session",
             booking_id,
             name,
             hours,
@@ -141,15 +145,19 @@ def _process_booking(
             )
             stats["dry_urgent"] += 1
         else:
-            result = send_whatsapp_message(phone, TEMPLATE_URGENT)
+            result = send_whatsapp_message(
+                phone,
+                TEMPLATE_URGENT,
+                body_params=[name, str(booking.get("Date") or ""), str(booking.get("Time") or "")],
+            )
             if result.get("ok"):
                 _mark_sent(supabase, booking_id, "reminder_urgent_sent")
                 stats["sent_urgent"] += 1
-                logger.info("Marked reminder_urgent_sent for %s", booking_id)
+                logger.info("Arena urgent reminder sent for %s", booking_id)
             else:
                 stats["errors"] += 1
                 logger.error(
-                    "Failed urgent reminder for %s: %s",
+                    "Failed arena urgent reminder for %s: %s",
                     booking_id,
                     result.get("error"),
                 )

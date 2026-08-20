@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from supabase import create_client
 
-from app.auth import verify_token
+from app.auth import require_perm
 from app.config import SUPABASE_KEY, SUPABASE_URL
 from app.errors import http_500
 
@@ -12,7 +12,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 @router.get("/{customer_id}")
-def get_customer(customer_id: str, user=Depends(verify_token)):
+def get_customer(customer_id: str, user=Depends(require_perm("bookings"))):
     try:
         res = (
             supabase.table("customers")
@@ -31,7 +31,7 @@ def get_customer(customer_id: str, user=Depends(verify_token)):
 
 
 @router.get("/{customer_id}/bookings")
-def get_customer_bookings(customer_id: str, user=Depends(verify_token)):
+def get_customer_bookings(customer_id: str, user=Depends(require_perm("bookings"))):
     """Bookings for this customer, newest session date/time first."""
     try:
         exists = (

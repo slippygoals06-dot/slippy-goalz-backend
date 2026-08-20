@@ -6,7 +6,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, field_validator
 from supabase import create_client
 
-from app.auth import parse_token, verify_token
+from app.auth import parse_token, require_perm
 from app.config import SUPABASE_URL, SUPABASE_KEY
 from app.errors import http_500
 
@@ -96,7 +96,7 @@ def get_slots(creds: Optional[HTTPAuthorizationCredentials] = Depends(_optional_
 
 
 @router.post("/")
-def create_slot(slot: SlotCreate, user=Depends(verify_token)):
+def create_slot(slot: SlotCreate, user=Depends(require_perm("slots"))):
     """Create an Available (or Blocked) slot for Date+Time."""
     date = slot.date[:10]
     time = slot.time.strip()
@@ -153,7 +153,7 @@ def create_slot(slot: SlotCreate, user=Depends(verify_token)):
 
 
 @router.post("/bulk")
-def create_slots_bulk(body: BulkCreateBody, user=Depends(verify_token)):
+def create_slots_bulk(body: BulkCreateBody, user=Depends(require_perm("slots"))):
     """Create multiple Available slots for one date (skips existing times)."""
     date = body.date[:10]
     created = []
@@ -175,7 +175,7 @@ def create_slots_bulk(body: BulkCreateBody, user=Depends(verify_token)):
 
 
 @router.post("/copy-day")
-def copy_day(body: CopyDayBody, user=Depends(verify_token)):
+def copy_day(body: CopyDayBody, user=Depends(require_perm("slots"))):
     """Copy times from from_date onto to_date as Available (skip conflicts)."""
     src = (
         supabase.table("slots")
@@ -195,7 +195,7 @@ def copy_day(body: CopyDayBody, user=Depends(verify_token)):
 
 
 @router.put("/{slot_id}")
-def update_slot(slot_id: str, slot: SlotUpdate, user=Depends(verify_token)):
+def update_slot(slot_id: str, slot: SlotUpdate, user=Depends(require_perm("slots"))):
     try:
         data = {}
         status = slot.Status or slot.status
@@ -236,7 +236,7 @@ def update_slot(slot_id: str, slot: SlotUpdate, user=Depends(verify_token)):
 
 
 @router.delete("/{slot_id}")
-def delete_slot(slot_id: str, user=Depends(verify_token)):
+def delete_slot(slot_id: str, user=Depends(require_perm("slots"))):
     try:
         res = supabase.table("slots").delete().eq("id", slot_id).execute()
         if not res.data:
