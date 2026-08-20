@@ -11,6 +11,7 @@ from app.audit import log_audit_event
 from app.auth import verify_token, optional_owner
 from app.config import SUPABASE_URL, SUPABASE_KEY
 from app.errors import http_500
+from app.customers import find_or_create_customer
 from app.phone import normalize_phone
 from app.rate_limit import SlidingWindowRateLimiter, client_ip
 from app.routes.reminders import send_booking_confirmation, schedule_reminder
@@ -182,6 +183,14 @@ def create_booking(booking: Booking, request: Request):
 
         payment_mode = normalize_payment_mode(booking.payment_mode or booking.issue)
 
+        customer = None
+        try:
+            customer = find_or_create_customer(
+                phone, name=booking.name, email=booking.email
+            )
+        except Exception as cust_err:
+            print(f"find_or_create_customer failed (continuing): {cust_err}")
+
         slot_id = claimed.get("id")
         booking_id = f"CUST-{uuid.uuid4().hex[:8].upper()}"
         data = {
@@ -198,6 +207,8 @@ def create_booking(booking: Booking, request: Request):
             "Payment Status": "Unpaid",
             "Notes": booking.notes,
         }
+        if customer and customer.get("id"):
+            data["customer_id"] = customer["id"]
         if optional_owner(request) and booking.amount is not None:
             data["amount"] = float(booking.amount)
         if booking.source:

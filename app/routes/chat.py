@@ -5,6 +5,7 @@ from groq import Groq
 from supabase import create_client
 from app.config import SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY, BOOKING_PAGE_URL
 from app.auth import verify_token, require_owner
+from app.customers import find_or_create_customer
 from app.phone import normalize_phone
 from app.slot_claim import claim_slot, link_slot_booking, release_slot
 from app.errors import http_500
@@ -1745,7 +1746,19 @@ AVAILABLE DATES (live):
 
                 slot_id = claimed.get("id")
                 try:
-                    supabase.table("bookings").insert({
+                    customer_id = None
+                    try:
+                        customer = find_or_create_customer(
+                            phone,
+                            name=collected.get("name"),
+                            email=collected.get("email"),
+                        )
+                        if customer and customer.get("id"):
+                            customer_id = customer["id"]
+                    except Exception as cust_err:
+                        logger.warning(f"find_or_create_customer failed: {cust_err}")
+
+                    booking_row = {
                         "Booking ID": booking_id,
                         "Name": collected.get("name", ""),
                         "Phone": phone,
@@ -1758,7 +1771,11 @@ AVAILABLE DATES (live):
                         "Status": "Pending",
                         "Payment Status": "Unpaid",
                         "Notes": "[Chatbot] Booked via customer chatbot",
-                    }).execute()
+                    }
+                    if customer_id:
+                        booking_row["customer_id"] = customer_id
+
+                    supabase.table("bookings").insert(booking_row).execute()
                     if slot_id is not None:
                         link_slot_booking(slot_id, booking_id)
                     logger.info(f"Booking created: {booking_id} | {phone} | {booking_date} {booking_time}")
