@@ -88,6 +88,8 @@ class BookingUpdate(BaseModel):
     payment_status: Optional[str] = None
     notes: Optional[str] = None
     amount: Optional[float] = Field(None, ge=0, le=10_000_000)
+    deposit_amount: Optional[float] = Field(None, ge=0, le=10_000_000)
+    deposit_paid: Optional[bool] = None
     source: Optional[str] = None
 
 class StatusUpdate(BaseModel):
@@ -330,6 +332,8 @@ def update_booking(booking_id: str, booking: BookingUpdate, user=Depends(require
         if booking.payment_status is not None: data["Payment Status"] = booking.payment_status
         if booking.notes is not None: data["Notes"] = booking.notes
         if booking.amount is not None: data["amount"] = booking.amount
+        if booking.deposit_amount is not None: data["deposit_amount"] = booking.deposit_amount
+        if booking.deposit_paid is not None: data["deposit_paid"] = booking.deposit_paid
         if booking.source is not None: data["Source"] = booking.source
         res = supabase.table("bookings").update(data).eq("Booking ID", booking_id).execute()
         return res.data[0] if res.data else {}
@@ -368,6 +372,8 @@ def update_booking_status(booking_id: str, body: StatusUpdate, user=Depends(requ
             _send_confirm_whatsapp(updated)
         elif body.Status == "Rejected":
             action = "rejected"
+        elif body.Status in ("No-show", "No Show", "Noshow"):
+            action = "no_show"
         if action:
             log_audit_event(
                 actor=user,
@@ -377,6 +383,8 @@ def update_booking_status(booking_id: str, body: StatusUpdate, user=Depends(requ
                     "name": before.get("Name"),
                     "from": before.get("Status"),
                     "to": body.Status,
+                    "deposit_paid": before.get("deposit_paid"),
+                    "deposit_amount": before.get("deposit_amount"),
                 },
             )
         return updated

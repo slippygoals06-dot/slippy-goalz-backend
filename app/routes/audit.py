@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
       'deleted',
       'payment_changed',
       'completed_invoiced',
-      'invoice_status_changed'
+      'invoice_status_changed',
+      'no_show'
     )),
   booking_id TEXT,
   invoice_id TEXT,
