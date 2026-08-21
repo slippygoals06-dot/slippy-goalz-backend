@@ -20,7 +20,7 @@ router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 BUSINESS_NAME = "Slippy Goalz Arena"
-BUSINESS_TAGLINE = "Phone Repair Services"
+BUSINESS_TAGLINE = "Pitch Booking · Football Arena"
 
 
 class CompleteBookingBody(BaseModel):
@@ -254,8 +254,8 @@ def _build_invoice_pdf(invoice: dict, booking: Optional[dict]) -> BytesIO:
     customer = (booking or {}).get("Name") or "—"
     phone = (booking or {}).get("Phone") or "—"
     email = (booking or {}).get("Email") or "—"
-    device = (booking or {}).get("Device") or "—"
-    service = (booking or {}).get("Service") or "—"
+    players = (booking or {}).get("Device") or "—"
+    service = (booking or {}).get("Service") or "Pitch booking"
     amount = invoice.get("amount") or 0
     inv_no = invoice.get("invoice_number") or "—"
     status = (invoice.get("status") or "unpaid").upper()
@@ -300,7 +300,7 @@ def _build_invoice_pdf(invoice: dict, booking: Optional[dict]) -> BytesIO:
         ],
         [
             Paragraph(service, value_style),
-            Paragraph(f"Device: {device}", value_style),
+            Paragraph(f"Players / session: {players}", value_style),
             Paragraph(f"Rs {float(amount):,.0f}", ParagraphStyle("amt", parent=styles["Normal"], fontSize=11, alignment=TA_RIGHT)),
         ],
     ]

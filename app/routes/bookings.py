@@ -297,13 +297,13 @@ def create_booking(booking: Booking, request: Request):
                 send_booking_confirmation(
                     customer_email=booking.email,
                     business_name=BUSINESS_NAME,
-                    service=booking.service or "repair",
+                    service=booking.service or "Pitch booking",
                     appointment_time=appointment_dt,
                 )
                 schedule_reminder(
                     customer_email=booking.email,
                     business_name=BUSINESS_NAME,
-                    service=booking.service or "repair",
+                    service=booking.service or "Pitch booking",
                     appointment_time=appointment_dt,
                 )
             except Exception as email_err:

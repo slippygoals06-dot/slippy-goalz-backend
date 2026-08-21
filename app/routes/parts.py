@@ -255,7 +255,7 @@ def install_parts(body: InstallPartsBody, user=Depends(require_owner)):
 def get_batch_qrcode(batch_number: str):
     _get_batch_by_number(batch_number)
     try:
-        url = f"https://irepair-dashboard.vercel.app/verify/{batch_number}"
+        url = f"https://slippy-goalz-dashboard.vercel.app/verify/{batch_number}"
         img = qrcode.make(url)
         buf = BytesIO()
         img.save(buf, format="PNG")

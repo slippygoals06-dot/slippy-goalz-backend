@@ -1143,12 +1143,12 @@ def _handle_customer_message(req: CustomerChatRequest, session_id: str, session:
         DATA_COLLECTION_STEPS = ["get_device", "get_date", "get_time", "get_name",
                                   "get_phone", "get_email", "get_new_date", "get_new_time"]
         REPROMPT_TEXT = {
-            "get_device": r("Now, what device do you have and what's the issue?",
-                             "Ab batayein, kaun sa device hai aur kya masla hai?",
-                             "اب بتائیں، کون سا ڈیوائس ہے اور کیا مسئلہ ہے؟", lang),
-            "get_date": r("Which date works for your appointment?",
-                          "Appointment ke liye kaun si date theek hai?",
-                          "ملاقات کے لیے کون سی تاریخ مناسب ہے؟", lang),
+            "get_device": r("How many players will play? (e.g. 10)",
+                             "Kitne players khelenge? (maslan: 10)",
+                             "کتنے کھلاڑی کھیلیں گے؟ (مثلاً: 10)", lang),
+            "get_date": r("Which date works for your pitch booking?",
+                          "Pitch booking ke liye kaun si date theek hai?",
+                          "پچ بکنگ کے لیے کون سی تاریخ مناسب ہے؟", lang),
             "get_time": r("What time would you prefer?",
                          "Kaun sa waqt chahiye?",
                          "کیا وقت مناسب ہے؟", lang),
@@ -1206,13 +1206,13 @@ def _handle_customer_message(req: CustomerChatRequest, session_id: str, session:
                 r(f"Found your booking:\n\n"
                   f"📅 Date: {booking.get('Date')}\n"
                   f"⏰ Time: {booking.get('Time')}\n"
-                  f"📱 Device: {booking.get('Device')}\n"
-                  f"🔧 Issue: {booking.get('Issue')}\n\n"
+                  f"⚽ Players: {booking.get('Device')}\n"
+                  f"📋 Service: {booking.get('Service') or booking.get('Issue') or 'Pitch booking'}\n\n"
                   f"Are you sure you want to cancel? Type YES to confirm or NO to keep it.{note}",
                   f"Aapki booking mili:\n\n"
                   f"📅 Date: {booking.get('Date')}\n"
                   f"⏰ Waqt: {booking.get('Time')}\n"
-                  f"📱 Device: {booking.get('Device')}\n\n"
+                  f"⚽ Players: {booking.get('Device')}\n\n"
                   f"Kya aap wakai cancel karna chahte hain? YES ya NO likhein.{note}",
                   f"آپ کی بکنگ ملی:\n\n"
                   f"📅 تاریخ: {booking.get('Date')}\n"
@@ -1237,9 +1237,9 @@ def _handle_customer_message(req: CustomerChatRequest, session_id: str, session:
             else:
                 reset_session(session_id)
                 return respond(
-                    r("No problem! Your booking is kept. See you on your appointment day! 🔧",
-                      "Theek hai! Aapki booking safe hai. Appointment pe milenge! 🔧",
-                      "ٹھیک ہے! آپ کی بکنگ محفوظ ہے۔ ملاقات پر ملیں گے! 🔧", lang),
+                    r("No problem! Your booking is kept. See you on the pitch! ⚽",
+                      "Theek hai! Aapki booking safe hai. Pitch pe milenge! ⚽",
+                      "ٹھیک ہے! آپ کی بکنگ محفوظ ہے۔ پچ پر ملیں گے! ⚽", lang),
                     session_id, session_reset=True
                 )
 
@@ -1391,9 +1391,9 @@ def _handle_customer_message(req: CustomerChatRequest, session_id: str, session:
                                     "معذرت، دوبارہ شیڈول ناکام ہوا۔", lang), session_id)
                 reset_session(session_id)
                 return respond(
-                    r(f"✅ Rescheduled! Your new appointment is on {collected['new_date']} at {collected['new_time']}.\n\nSee you then! 🔧",
-                      f"✅ Reschedule ho gaya! Naya appointment: {collected['new_date']} - {collected['new_time']} baje.\n\nMilenge! 🔧",
-                      f"✅ دوبارہ شیڈول ہو گیا! نئی ملاقات: {collected['new_date']}۔ 🔧", lang),
+                    r(f"✅ Rescheduled! Your new slot is on {collected['new_date']} at {collected['new_time']}.\n\nSee you on the pitch! ⚽",
+                      f"✅ Reschedule ho gaya! Naya slot: {collected['new_date']} - {collected['new_time']} baje.\n\nPitch pe milenge! ⚽",
+                      f"✅ دوبارہ شیڈول ہو گیا! نیا سلاٹ: {collected['new_date']}۔ ⚽", lang),
                     session_id, session_reset=True
                 )
             else:
@@ -1513,17 +1513,18 @@ AVAILABLE DATES (live):
         # GET DEVICE + ISSUE
         # ════════════════════════════════════════════════════════════════════
         elif step == "get_device":
-            if len(msg) < 3:
+            m = re.search(r"(\d{1,2})", msg)
+            players = int(m.group(1)) if m else None
+            if players is None or players < 2 or players > 22:
                 return respond(
-                    r("Please tell me your device and issue (e.g. iPhone 14, battery draining fast)",
-                      "Device aur masla batayein (maslan: iPhone 14, battery jaldi khatam)",
-                      "ڈیوائس اور مسئلہ بتائیں", lang),
+                    r("How many players? Enter a number between 2 and 22 (e.g. 10).",
+                      "Kitne players? 2 se 22 ke beech number (maslan: 10).",
+                      "کتنے کھلاڑی؟ 2 سے 22 کے درمیان نمبر دیں۔", lang),
                     session_id
                 )
-            parts = msg.split(',', 1)
-            collected["device"] = parts[0].strip()
-            collected["issue"] = parts[1].strip() if len(parts) > 1 else msg
-            wait_time = get_wait_time(collected["issue"])
+            collected["device"] = f"{players} players"
+            collected["issue"] = "Pitch booking"
+            collected["service"] = "Pitch booking"
 
             session["step"] = "get_date"
             available_dates = get_available_dates()
@@ -1531,9 +1532,9 @@ AVAILABLE DATES (live):
             slots_text = "\n".join([f"• {d}" for d in available_dates[:7]]) or "Please call us"
 
             reply = r(
-                f"Got it! **{collected['device']}** — {collected['issue']}.\n⏱ Estimated repair time: {wait_time}\n\nAvailable dates:\n{slots_text}\n\nWhich date works? (or say 'tomorrow', 'Saturday' etc.)",
-                f"Theek hai! **{collected['device']}** — {collected['issue']}.\n⏱ Repair time: {wait_time}\n\nAvailable dates:\n{slots_text}\n\nKaun si date theek hai?",
-                f"ٹھیک ہے! ⏱ مرمت کا وقت: {wait_time}\n\nدستیاب تاریخیں:\n{slots_text}\n\nکون سی تاریخ مناسب ہے؟", lang
+                f"Got it — **{players} players**.\n\nAvailable dates:\n{slots_text}\n\nWhich date works? (or say 'tomorrow', 'Saturday' etc.)",
+                f"Theek hai — **{players} players**.\n\nAvailable dates:\n{slots_text}\n\nKaun si date theek hai?",
+                f"ٹھیک ہے — **{players} کھلاڑی**۔\n\nدستیاب تاریخیں:\n{slots_text}\n\nکون سی تاریخ مناسب ہے؟", lang
             )
             session["history"].append({"role": "assistant", "content": reply})
             return respond(reply, session_id, slot_buttons=slot_btns)
@@ -1686,12 +1687,10 @@ AVAILABLE DATES (live):
                 collected["email"] = msg.strip().lower()
 
             session["step"] = "confirm"
-            wait_time = get_wait_time(collected.get("issue", ""))
             reply = r(
                 f"Please confirm your booking:\n\n"
-                f"📱 Device: {collected.get('device')}\n"
-                f"🔧 Issue: {collected.get('issue')}\n"
-                f"⏱ Est. time: {wait_time}\n"
+                f"⚽ Players: {collected.get('device')}\n"
+                f"📋 Service: {collected.get('service') or 'Pitch booking'}\n"
                 f"📅 Date: {collected.get('date')}\n"
                 f"⏰ Time: {collected.get('time')}\n"
                 f"👤 Name: {collected.get('name')}\n"
@@ -1700,9 +1699,8 @@ AVAILABLE DATES (live):
                 f"Type YES to confirm or NO to cancel.",
 
                 f"Booking confirm karein:\n\n"
-                f"📱 Device: {collected.get('device')}\n"
-                f"🔧 Masla: {collected.get('issue')}\n"
-                f"⏱ Repair time: {wait_time}\n"
+                f"⚽ Players: {collected.get('device')}\n"
+                f"📋 Service: Pitch booking\n"
                 f"📅 Date: {collected.get('date')}\n"
                 f"⏰ Waqt: {collected.get('time')}\n"
                 f"👤 Naam: {collected.get('name')}\n"
@@ -1710,9 +1708,8 @@ AVAILABLE DATES (live):
                 f"YES ya NO likhein.",
 
                 f"بکنگ کی تصدیق:\n\n"
-                f"📱 ڈیوائس: {collected.get('device')}\n"
-                f"🔧 مسئلہ: {collected.get('issue')}\n"
-                f"⏱ وقت: {wait_time}\n"
+                f"⚽ کھلاڑی: {collected.get('device')}\n"
+                f"📋 سروس: Pitch booking\n"
                 f"📅 تاریخ: {collected.get('date')}\n"
                 f"⏰ وقت: {collected.get('time')}\n"
                 f"👤 نام: {collected.get('name')}\n"
@@ -1789,8 +1786,8 @@ AVAILABLE DATES (live):
                         "Phone": phone,
                         "Email": collected.get("email", ""),
                         "Device": collected.get("device", ""),
-                        "Issue": collected.get("issue", ""),
-                        "Service": collected.get("issue", ""),
+                        "Issue": collected.get("issue") or "Pitch booking",
+                        "Service": collected.get("service") or "Pitch booking",
                         "Date": booking_date,
                         "Time": booking_time,
                         "Status": "Pending",
@@ -1836,9 +1833,9 @@ AVAILABLE DATES (live):
                 session["booking_id"] = booking_id
                 reset_session(session_id)
                 reply = r(
-                    f"🎉 Booking confirmed! Your ID: **{booking_id}**\n\nSee you on {booking_info.get('date')} at {booking_info.get('time')}. Please arrive 5 mins early.\n\nWould you mind leaving us a Google review after your repair? It helps us a lot! ⭐",
-                    f"🎉 Booking confirm! ID: **{booking_id}**\n\n{booking_info.get('date')} ko {booking_info.get('time')} baje milenge. 5 minute pehle aa jayein.\n\nRepair ke baad Google review de dein — bohat madad hoti hai! ⭐",
-                    f"🎉 بکنگ کنفرم! ID: **{booking_id}**\n\n{booking_info.get('date')} کو ملیں گے۔\n\nمرمت کے بعد Google review دیں! ⭐", lang
+                    f"🎉 Booking confirmed! Your ID: **{booking_id}**\n\nSee you on {booking_info.get('date')} at {booking_info.get('time')}. Please arrive 5 mins early.\n\nThanks for choosing Slippy Goalz Arena! ⚽",
+                    f"🎉 Booking confirm! ID: **{booking_id}**\n\n{booking_info.get('date')} ko {booking_info.get('time')} baje milenge. 5 minute pehle aa jayein.\n\nSlippy Goalz Arena — shukriya! ⚽",
+                    f"🎉 بکنگ کنفرم! ID: **{booking_id}**\n\n{booking_info.get('date')} کو {booking_info.get('time')} بجے ملیں گے۔ 5 منٹ پہلے آ جائیں۔\n\nسلپی گولز ایرینا — شکریہ! ⚽", lang
                 )
                 return respond(reply, session_id,
                     booking_created=True, booking_info=booking_info,
