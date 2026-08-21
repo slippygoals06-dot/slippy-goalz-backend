@@ -7,7 +7,14 @@ from app.config import SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY, BOOKING_PAGE_UR
 from app.auth import verify_token, require_owner
 from app.customers import find_or_create_customer
 from app.phone import normalize_phone
-from app.slot_claim import claim_slot, link_slot_booking, release_slot
+from app.slot_claim import (
+    claim_slot,
+    link_slot_booking,
+    release_slot,
+    release_slot_by_datetime,
+    is_unique_violation,
+    ACTIVE_BOOKING_STATUSES,
+)
 from app.errors import http_500
 from app.rate_limit import SlidingWindowRateLimiter, client_ip
 import uuid
@@ -664,21 +671,47 @@ def book_slot(booking_date: str, booking_time: str, phone: str, booking_id: str)
 
 def free_slot_by_booking_id(booking_id: str):
     """Frees up a slot when a booking is cancelled or rescheduled away from it."""
+    if not booking_id:
+        return
     try:
-        supabase.table("slots").update({
-            "Status": "Available",
-            "Booked By": "EMPTY",
-            "Phone": "EMPTY",
-            "Booking ID": "",
-        }).eq("Booking ID", booking_id).execute()
-    except: pass
+        row = (
+            supabase.table("bookings")
+            .select("Date, Time")
+            .eq("Booking ID", booking_id)
+            .limit(1)
+            .execute()
+        )
+        if row.data:
+            release_slot_by_datetime(
+                row.data[0].get("Date"),
+                row.data[0].get("Time"),
+                booking_id,
+            )
+        else:
+            # Booking already deleted — still try free by Booking ID link
+            supabase.table("slots").update({
+                "Status": "Available",
+                "Booked By": "EMPTY",
+                "Phone": "EMPTY",
+                "Booking ID": "",
+            }).eq("Booking ID", booking_id).execute()
+    except Exception:
+        pass
 
 # ── Duplicate booking check ────────────────────────────────────────────────────
 def has_duplicate_booking(phone: str, booking_date: str) -> bool:
     try:
-        res = supabase.table("bookings").select("*").eq("Phone", phone).eq("Date", booking_date).execute()
-        return len(res.data) > 0
-    except: return False
+        res = (
+            supabase.table("bookings")
+            .select("Booking ID")
+            .eq("Phone", phone)
+            .eq("Date", booking_date)
+            .in_("Status", list(ACTIVE_BOOKING_STATUSES))
+            .execute()
+        )
+        return len(res.data or []) > 0
+    except Exception:
+        return False
 
 # ── Find booking by phone ──────────────────────────────────────────────────────
 def find_bookings_by_phone(phone: str, session_booking_id: Optional[str] = None) -> list:
@@ -1813,6 +1846,16 @@ AVAILABLE DATES (live):
                                 release_slot(slot_id)
                             booking_id = raced.data[0].get("Booking ID") or booking_id
                         else:
+                            if slot_id is not None:
+                                release_slot(slot_id)
+                            if is_unique_violation(insert_err):
+                                return respond(
+                                    r("This slot is no longer available, please choose another.",
+                                      "Yeh slot ab available nahi — koi aur date/time chunein.",
+                                      "یہ سلاٹ اب دستیاب نہیں، براہ کرم دوسرا منتخب کریں۔", lang),
+                                    session_id,
+                                    slot_buttons=build_slot_buttons(get_available_dates()),
+                                )
                             raise insert_err
                     if slot_id is not None:
                         link_slot_booking(slot_id, booking_id)

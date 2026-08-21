@@ -15,7 +15,16 @@ from app.customers import find_or_create_customer
 from app.phone import normalize_phone
 from app.rate_limit import SlidingWindowRateLimiter, client_ip
 from app.routes.reminders import send_booking_confirmation, schedule_reminder
-from app.slot_claim import SLOT_UNAVAILABLE_MSG, claim_slot, link_slot_booking, release_slot
+from app.slot_claim import (
+    SLOT_UNAVAILABLE_MSG,
+    ACTIVE_BOOKING_STATUSES,
+    RELEASE_ON_STATUSES,
+    claim_slot,
+    link_slot_booking,
+    release_slot,
+    release_slot_by_datetime,
+    is_unique_violation,
+)
 from app.whatsapp import send_whatsapp_message
 from app.wa_copy import confirm_body_params
 
@@ -213,13 +222,14 @@ def create_booking(booking: Booking, request: Request):
         booking_date = appointment_dt.strftime("%Y-%m-%d")
         booking_time = appointment_dt.strftime("%H:%M")
 
-        # Same duplicate guard as chatbot: one booking per phone+date
+        # Soft duplicate guard — DB unique index is the hard race net
         try:
             dup = (
                 supabase.table("bookings")
-                .select("Booking ID")
+                .select("Booking ID, Status")
                 .eq("Phone", phone)
                 .eq("Date", booking_date)
+                .in_("Status", list(ACTIVE_BOOKING_STATUSES))
                 .execute()
             )
             if dup.data:
@@ -232,7 +242,7 @@ def create_booking(booking: Booking, request: Request):
         except Exception as dup_err:
             print(f"Duplicate check failed (continuing): {dup_err}")
 
-        # Claim slot FIRST (atomic WHERE Status=Available). Reject if 0 rows.
+        # Claim slot FIRST (atomic RPC / Available→Booked). Reject if 0 rows.
         claimed = claim_slot(booking_date, booking_time, phone)
         if not claimed:
             raise HTTPException(status_code=409, detail=SLOT_UNAVAILABLE_MSG)
@@ -289,6 +299,8 @@ def create_booking(booking: Booking, request: Request):
                     return raced
             if slot_id is not None:
                 release_slot(slot_id)
+            if is_unique_violation(insert_err):
+                raise HTTPException(status_code=409, detail=SLOT_UNAVAILABLE_MSG) from insert_err
             raise insert_err
 
         # --- NEW: send confirmation + schedule reminder ---
@@ -321,22 +333,100 @@ def create_booking(booking: Booking, request: Request):
 @router.put("/{booking_id}")
 def update_booking(booking_id: str, booking: BookingUpdate, user=Depends(require_perm("bookings"))):
     try:
+        existing = (
+            supabase.table("bookings")
+            .select("*")
+            .eq("Booking ID", booking_id)
+            .limit(1)
+            .execute()
+        )
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        before = existing.data[0]
+
         data = {}
         # Customer identity fields must be immutable to keep customer history accurate.
-        # We intentionally do NOT update Name/Phone/Email/Device from BookingUpdate.
-        if booking.service is not None: data["Service"] = booking.service
-        if booking.issue is not None: data["Issue"] = booking.issue
-        if booking.date is not None: data["Date"] = booking.date
-        if booking.time is not None: data["Time"] = booking.time
-        if booking.status is not None: data["Status"] = booking.status
-        if booking.payment_status is not None: data["Payment Status"] = booking.payment_status
-        if booking.notes is not None: data["Notes"] = booking.notes
-        if booking.amount is not None: data["amount"] = booking.amount
-        if booking.deposit_amount is not None: data["deposit_amount"] = booking.deposit_amount
-        if booking.deposit_paid is not None: data["deposit_paid"] = booking.deposit_paid
-        if booking.source is not None: data["Source"] = booking.source
-        res = supabase.table("bookings").update(data).eq("Booking ID", booking_id).execute()
-        return res.data[0] if res.data else {}
+        if booking.service is not None:
+            data["Service"] = booking.service
+        if booking.issue is not None:
+            data["Issue"] = booking.issue
+        if booking.status is not None:
+            data["Status"] = booking.status
+        if booking.payment_status is not None:
+            data["Payment Status"] = booking.payment_status
+        if booking.notes is not None:
+            data["Notes"] = booking.notes
+        if booking.amount is not None:
+            data["amount"] = booking.amount
+        if booking.deposit_amount is not None:
+            data["deposit_amount"] = booking.deposit_amount
+        if booking.deposit_paid is not None:
+            data["deposit_paid"] = booking.deposit_paid
+        if booking.source is not None:
+            data["Source"] = booking.source
+
+        old_date = before.get("Date")
+        old_time = before.get("Time")
+        new_date = booking.date if booking.date is not None else old_date
+        new_time = booking.time if booking.time is not None else old_time
+
+        # Canonicalize if date/time provided
+        moved = False
+        claimed_new = None
+        if booking.date is not None or booking.time is not None:
+            appointment_dt = parse_appointment_datetime(new_date, new_time)
+            if not appointment_dt:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid date/time format. Use date YYYY-MM-DD and time HH:MM.",
+                )
+            new_date = appointment_dt.strftime("%Y-%m-%d")
+            new_time = appointment_dt.strftime("%H:%M")
+            data["Date"] = new_date
+            data["Time"] = new_time
+            moved = (new_date != old_date) or (new_time != old_time)
+
+        new_status = data.get("Status", before.get("Status"))
+        will_be_active = new_status in ACTIVE_BOOKING_STATUSES
+        was_active = before.get("Status") in ACTIVE_BOOKING_STATUSES
+
+        # Moving an active booking → claim new hour first, then free old
+        if moved and will_be_active:
+            phone = before.get("Phone") or ""
+            claimed_new = claim_slot(new_date, new_time, phone)
+            if not claimed_new:
+                raise HTTPException(status_code=409, detail=SLOT_UNAVAILABLE_MSG)
+
+        try:
+            res = supabase.table("bookings").update(data).eq("Booking ID", booking_id).execute()
+        except Exception as upd_err:
+            if claimed_new and claimed_new.get("id") is not None:
+                release_slot(claimed_new["id"])
+            if is_unique_violation(upd_err):
+                raise HTTPException(status_code=409, detail=SLOT_UNAVAILABLE_MSG) from upd_err
+            raise
+
+        if not res.data:
+            if claimed_new and claimed_new.get("id") is not None:
+                release_slot(claimed_new["id"])
+            raise HTTPException(status_code=404, detail="Booking not found")
+
+        updated = res.data[0]
+
+        if moved and will_be_active:
+            if claimed_new and claimed_new.get("id") is not None:
+                link_slot_booking(claimed_new["id"], booking_id)
+            release_slot_by_datetime(old_date, old_time, booking_id)
+
+        # Status moved to free-slot → release hour
+        if new_status in RELEASE_ON_STATUSES and was_active:
+            release_slot_by_datetime(
+                updated.get("Date") or old_date,
+                updated.get("Time") or old_time,
+                booking_id,
+            )
+
+        return updated
     except HTTPException:
         raise
     except Exception as e:
@@ -387,6 +477,11 @@ def update_booking_status(booking_id: str, body: StatusUpdate, user=Depends(requ
                     "deposit_amount": before.get("deposit_amount"),
                 },
             )
+
+        # Free pitch hour when booking no longer holds the slot
+        if body.Status in RELEASE_ON_STATUSES:
+            release_slot_by_datetime(before.get("Date"), before.get("Time"), booking_id)
+
         return updated
     except HTTPException:
         raise
@@ -445,6 +540,9 @@ def delete_booking(booking_id: str, user=Depends(require_perm("bookings"))):
         before = existing.data[0] if existing.data else None
 
         supabase.table("bookings").delete().eq("Booking ID", booking_id).execute()
+
+        if before:
+            release_slot_by_datetime(before.get("Date"), before.get("Time"), booking_id)
 
         log_audit_event(
             actor=user,

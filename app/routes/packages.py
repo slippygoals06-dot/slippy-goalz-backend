@@ -14,7 +14,13 @@ from app.config import SUPABASE_KEY, SUPABASE_URL
 from app.customers import find_or_create_customer
 from app.errors import http_500
 from app.phone import normalize_phone
-from app.slot_claim import SLOT_UNAVAILABLE_MSG, claim_slot, link_slot_booking, release_slot
+from app.slot_claim import (
+    SLOT_UNAVAILABLE_MSG,
+    claim_slot,
+    link_slot_booking,
+    release_slot,
+    is_unique_violation,
+)
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -195,7 +201,7 @@ def create_weekly_package(body: PackageCreate, user=Depends(require_perm("bookin
                 slot_id = c["slot"].get("id")
                 if slot_id is not None:
                     link_slot_booking(slot_id, booking_id)
-        except Exception:
+        except Exception as book_err:
             for c in claims:
                 if c["slot"].get("id") is not None:
                     release_slot(c["slot"]["id"])
@@ -204,6 +210,8 @@ def create_weekly_package(body: PackageCreate, user=Depends(require_perm("bookin
                 supabase.table("packages").delete().eq("id", package_id).execute()
             except Exception:
                 pass
+            if is_unique_violation(book_err):
+                raise HTTPException(status_code=409, detail=SLOT_UNAVAILABLE_MSG) from book_err
             raise
 
         return {
