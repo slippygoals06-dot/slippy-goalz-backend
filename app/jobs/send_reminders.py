@@ -25,6 +25,7 @@ from app.config import (
     SUPABASE_URL,
 )
 from app.whatsapp import send_whatsapp_message
+from app.wa_copy import reminder_body_params
 
 logging.basicConfig(
     level=logging.INFO,
@@ -115,7 +116,7 @@ def _process_booking(
             result = send_whatsapp_message(
                 phone,
                 TEMPLATE_24H,
-                body_params=[name, str(booking.get("Date") or ""), str(booking.get("Time") or "")],
+                body_params=reminder_body_params(booking),
             )
             if result.get("ok"):
                 _mark_sent(supabase, booking_id, "reminder_24h_sent")
@@ -148,7 +149,7 @@ def _process_booking(
             result = send_whatsapp_message(
                 phone,
                 TEMPLATE_URGENT,
-                body_params=[name, str(booking.get("Date") or ""), str(booking.get("Time") or "")],
+                body_params=reminder_body_params(booking),
             )
             if result.get("ok"):
                 _mark_sent(supabase, booking_id, "reminder_urgent_sent")

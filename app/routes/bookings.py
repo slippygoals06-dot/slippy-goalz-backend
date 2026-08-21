@@ -17,6 +17,8 @@ from app.rate_limit import SlidingWindowRateLimiter, client_ip
 from app.routes.reminders import send_booking_confirmation, schedule_reminder
 from app.slot_claim import SLOT_UNAVAILABLE_MSG, claim_slot, link_slot_booking, release_slot
 from app.whatsapp import send_whatsapp_message
+from app.wa_copy import confirm_body_params
+
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -124,14 +126,11 @@ def _send_confirm_whatsapp(booking: dict) -> None:
     phone = booking.get("Phone") or ""
     if not phone:
         return
-    name = booking.get("Name") or "customer"
-    date_s = str(booking.get("Date") or "")
-    time_s = str(booking.get("Time") or "")
     try:
         result = send_whatsapp_message(
             phone,
             WHATSAPP_CONFIRM_TEMPLATE,
-            body_params=[name, date_s, time_s],
+            body_params=confirm_body_params(booking),
         )
         if result.get("ok"):
             supabase.table("bookings").update({"confirmation_wa_sent": True}).eq(
