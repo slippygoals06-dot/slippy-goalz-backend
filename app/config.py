@@ -23,6 +23,17 @@ IS_PRODUCTION = _ENV in ("production", "prod") or bool(os.getenv("RAILWAY_ENVIRO
 WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
 
+# Comma-separated hosts for ProxyHeaders (Railway / custom domain)
+_TRUSTED_RAW = (os.getenv("TRUSTED_HOSTS") or "").strip()
+TRUSTED_PROXY_HOSTS = [
+    h.strip()
+    for h in (
+        _TRUSTED_RAW
+        or "slippy-goalz-backend-production.up.railway.app,.up.railway.app,localhost,127.0.0.1"
+    ).split(",")
+    if h.strip()
+]
+
 # Public customer booking page (Vercel)
 BOOKING_PAGE_URL = os.getenv(
     "BOOKING_PAGE_URL",

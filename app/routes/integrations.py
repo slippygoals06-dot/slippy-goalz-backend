@@ -12,6 +12,7 @@ from supabase import create_client
 from app.auth import require_owner
 from app.config import SUPABASE_URL, SUPABASE_KEY
 from app.crypto_secrets import decrypt_secret, encrypt_secret
+from app.audit import log_audit_event
 from app.errors import http_500
 
 router = APIRouter()
@@ -227,6 +228,11 @@ def connect_whatsapp(body: WhatsAppConnectRequest, user=Depends(require_owner)):
     }
 
     saved = _upsert_channel(row)
+    log_audit_event(
+        actor=user,
+        action="wa_connected",
+        details={"phone_number_id": phone_number_id},
+    )
     return {
         "ok": True,
         "status": "connected",

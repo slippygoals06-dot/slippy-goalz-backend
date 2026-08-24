@@ -11,6 +11,7 @@ from app.config import (
     OWNER_USERNAME,
     OWNER_PASSWORD,
     IS_PRODUCTION,
+    TRUSTED_PROXY_HOSTS,
 )
 
 if not SUPABASE_URL or not SUPABASE_KEY or not GROQ_API_KEY:
@@ -51,7 +52,7 @@ app = FastAPI(
 )
 
 app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=TRUSTED_PROXY_HOSTS)
 
 _origins = [
     "https://slippy-goalz-dashboard.vercel.app",
@@ -70,7 +71,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
     allow_origin_regex=r"https://slippy-goalz-dashboard[A-Za-z0-9.-]*\.vercel\.app$",
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
 )

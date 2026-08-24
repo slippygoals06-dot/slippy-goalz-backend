@@ -219,4 +219,12 @@ async def upload_attachment(
         raise http_500(e)
 
     url = _signed_url(bucket, path)
+    from app.audit import log_audit_event
+
+    log_audit_event(
+        actor=staff_user or "customer",
+        action="attachment_uploaded",
+        booking_id=str(booking.get("Booking ID") or booking_uuid),
+        details={"file_type": file_type, "size_bytes": size},
+    )
     return {**saved, "url": url}

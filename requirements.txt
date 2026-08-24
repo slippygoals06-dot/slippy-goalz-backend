@@ -53,3 +53,4 @@ reportlab
 web3
 eth-account
 python-multipart>=0.0.9
+pyotp>=2.9.0

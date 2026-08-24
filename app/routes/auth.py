@@ -1,7 +1,7 @@
 import re
 import time
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from pydantic import BaseModel, Field
 from typing import Optional
 from supabase import create_client
@@ -9,6 +9,13 @@ from app.auth import (
     verify_password,
     hash_password,
     create_access_token,
+    create_refresh_token,
+    create_pre_auth_token,
+    parse_pre_auth,
+    parse_refresh_token,
+    set_auth_cookies,
+    clear_auth_cookies,
+    COOKIE_REFRESH,
     verify_token,
     require_owner,
     current_auth,
@@ -21,6 +28,9 @@ from app.config import (
     SUPABASE_URL,
     SUPABASE_KEY,
 )
+from app.sessions import create_session, revoke_refresh_jti, revoke_username_sessions, rotate_access_jti
+from app.crypto_secrets import encrypt_secret, decrypt_secret
+from app.audit import log_audit_event
 from app.staff import (
     ASSIGNABLE_PERMISSIONS,
     DEFAULT_STAFF_PERMISSIONS,
@@ -36,6 +46,7 @@ from app.staff import (
 )
 from app.rate_limit import SlidingWindowRateLimiter, client_ip
 from app.errors import http_500
+import uuid
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -59,6 +70,21 @@ _login_limiter = SlidingWindowRateLimiter(max_requests=5, window_seconds=15 * 60
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class Login2FARequest(BaseModel):
+    pre_auth: str = Field(..., min_length=10)
+    code: str = Field(..., min_length=6, max_length=8)
+
+
+class TotpEnableRequest(BaseModel):
+    password: str
+    code: str = Field(..., min_length=6, max_length=8)
+
+
+class TotpDisableRequest(BaseModel):
+    password: str
+    code: str = Field(..., min_length=6, max_length=8)
 
 
 class PinSetRequest(BaseModel):
@@ -182,8 +208,93 @@ def _password_hash_for_user(username: str) -> Optional[str]:
     return None
 
 
+def _owner_totp_enabled() -> bool:
+    try:
+        res = (
+            supabase.table("owner_settings")
+            .select("totp_enabled")
+            .eq("username", OWNER_USERNAME)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return False
+        return bool(res.data[0].get("totp_enabled"))
+    except Exception:
+        return False
+
+
+def _owner_totp_secret() -> Optional[str]:
+    try:
+        res = (
+            supabase.table("owner_settings")
+            .select("totp_secret, totp_enabled")
+            .eq("username", OWNER_USERNAME)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return None
+        row = res.data[0]
+        if not row.get("totp_enabled"):
+            return None
+        return decrypt_secret(row.get("totp_secret"))
+    except Exception:
+        return None
+
+
+def _verify_totp(secret: str, code: str) -> bool:
+    try:
+        import pyotp
+    except ImportError:
+        return False
+    totp = pyotp.TOTP(secret)
+    return bool(totp.verify(str(code).strip(), valid_window=1))
+
+
+def _issue_session_response(
+    *,
+    response: Response,
+    request: Request,
+    username: str,
+    role: str,
+) -> dict:
+    access_jti = uuid.uuid4().hex
+    access = create_access_token({"sub": username, "role": role}, jti=access_jti)
+    refresh, refresh_jti, exp = create_refresh_token(username, role)
+    create_session(
+        username=username,
+        refresh_jti=refresh_jti,
+        access_jti=access_jti,
+        expires_at=exp,
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    set_auth_cookies(response, access, refresh)
+    log_audit_event(
+        actor=username,
+        action="login_ok",
+        details={"role": role, "ip": client_ip(request)},
+    )
+    from app.config import IS_PRODUCTION
+
+    body = {
+        "ok": True,
+        "token_type": "bearer",
+        "username": username,
+        "role": role,
+        "permissions": permissions_for_username(username, role),
+        "message": "Login successful",
+        "cookie_auth": True,
+    }
+    # Local/dev: also return token for Bearer fallback (cross-port localhost cookies are flaky)
+    if not IS_PRODUCTION:
+        body["access_token"] = access
+    return body
+
+
 @router.post("/login")
-def login(req: LoginRequest, request: Request):
+def login(req: LoginRequest, request: Request, response: Response):
     _login_limiter.check_or_raise(
         client_ip(request),
         detail="Too many attempts, try again later",
@@ -191,17 +302,187 @@ def login(req: LoginRequest, request: Request):
     username = _normalize_username(req.username)
     role = _authenticate(username, req.password)
     if not role:
+        log_audit_event(
+            actor=username or "unknown",
+            action="login_fail",
+            details={"ip": client_ip(request)},
+        )
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = create_access_token({"sub": username, "role": role})
+    if role == "owner" and _owner_totp_enabled():
+        pre = create_pre_auth_token(username, role)
+        return {
+            "ok": True,
+            "requires_2fa": True,
+            "pre_auth": pre,
+            "username": username,
+            "role": role,
+            "message": "Enter your authenticator code",
+        }
+
+    return _issue_session_response(
+        response=response, request=request, username=username, role=role
+    )
+
+
+@router.post("/login/2fa")
+def login_2fa(req: Login2FARequest, request: Request, response: Response):
+    _login_limiter.check_or_raise(
+        client_ip(request),
+        detail="Too many attempts, try again later",
+    )
+    parsed = parse_pre_auth(req.pre_auth)
+    if not parsed:
+        raise HTTPException(status_code=401, detail="2FA session expired — sign in again")
+    username, role = parsed
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="2FA is owner-only")
+    secret = _owner_totp_secret()
+    if not secret or not _verify_totp(secret, req.code):
+        log_audit_event(
+            actor=username,
+            action="login_fail",
+            details={"ip": client_ip(request), "reason": "bad_totp"},
+        )
+        raise HTTPException(status_code=401, detail="Invalid authenticator code")
+    return _issue_session_response(
+        response=response, request=request, username=username, role=role
+    )
+
+
+@router.post("/refresh")
+def refresh_session(request: Request, response: Response):
+    raw = request.cookies.get(COOKIE_REFRESH)
+    if not raw:
+        raise HTTPException(status_code=401, detail="No refresh session")
+    parsed = parse_refresh_token(raw)
+    if not parsed:
+        clear_auth_cookies(response)
+        raise HTTPException(status_code=401, detail="Refresh expired — sign in again")
+    username, role, refresh_jti = parsed
+    access_jti = uuid.uuid4().hex
+    access = create_access_token({"sub": username, "role": role}, jti=access_jti)
+    rotate_access_jti(refresh_jti, access_jti)
+    set_auth_cookies(response, access, raw)
     return {
-        "access_token": token,
-        "token_type": "bearer",
+        "ok": True,
         "username": username,
         "role": role,
         "permissions": permissions_for_username(username, role),
-        "message": "Login successful",
     }
+
+
+@router.post("/logout")
+def logout(request: Request, response: Response):
+    actor = "unknown"
+    raw = request.cookies.get(COOKIE_REFRESH)
+    if raw:
+        parsed = parse_refresh_token(raw)
+        if parsed:
+            actor = parsed[0]
+            revoke_refresh_jti(parsed[2])
+        else:
+            from app.auth import decode_token
+
+            payload = decode_token(raw)
+            if payload and payload.get("jti"):
+                actor = payload.get("sub") or actor
+                revoke_refresh_jti(payload["jti"])
+    clear_auth_cookies(response)
+    log_audit_event(actor=actor, action="logout", details={"ip": client_ip(request)})
+    return {"ok": True}
+
+
+@router.get("/2fa/status")
+def totp_status(user=Depends(require_owner)):
+    return {"enabled": _owner_totp_enabled()}
+
+
+@router.post("/2fa/setup")
+def totp_setup(user=Depends(require_owner)):
+    """Generate a new TOTP secret (not enabled until /2fa/enable)."""
+    try:
+        import pyotp
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail="2FA library missing on server") from e
+
+    secret = pyotp.random_base32()
+    enc = encrypt_secret(secret)
+    try:
+        existing = (
+            supabase.table("owner_settings")
+            .select("pin_hash")
+            .eq("username", user)
+            .limit(1)
+            .execute()
+        )
+        pin_hash = existing.data[0].get("pin_hash") if existing.data else None
+        supabase.table("owner_settings").upsert(
+            {
+                "username": user,
+                "pin_hash": pin_hash,
+                "totp_secret": enc,
+                "totp_enabled": False,
+                "updated_at": _now_iso(),
+            }
+        ).execute()
+    except Exception as e:
+        raise http_500(e)
+
+    uri = pyotp.TOTP(secret).provisioning_uri(name=user, issuer_name="Slippy Goalz Arena")
+    return {"ok": True, "secret": secret, "otpauth_url": uri}
+
+
+@router.post("/2fa/enable")
+def totp_enable(req: TotpEnableRequest, user=Depends(require_owner)):
+    if not verify_password(req.password, HASHED_PASSWORD):
+        raise HTTPException(status_code=401, detail="Invalid password")
+    try:
+        res = (
+            supabase.table("owner_settings")
+            .select("totp_secret")
+            .eq("username", user)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        raise http_500(e)
+    if not res.data or not res.data[0].get("totp_secret"):
+        raise HTTPException(status_code=400, detail="Call /auth/2fa/setup first")
+    secret = decrypt_secret(res.data[0].get("totp_secret"))
+    if not secret or not _verify_totp(secret, req.code):
+        raise HTTPException(status_code=401, detail="Invalid authenticator code")
+    try:
+        supabase.table("owner_settings").update(
+            {"totp_enabled": True, "updated_at": _now_iso()}
+        ).eq("username", user).execute()
+    except Exception as e:
+        raise http_500(e)
+    log_audit_event(actor=user, action="totp_enabled", details={})
+    return {"ok": True, "enabled": True}
+
+
+@router.post("/2fa/disable")
+def totp_disable(req: TotpDisableRequest, user=Depends(require_owner)):
+    if not verify_password(req.password, HASHED_PASSWORD):
+        raise HTTPException(status_code=401, detail="Invalid password")
+    secret = _owner_totp_secret()
+    if secret and not _verify_totp(secret, req.code):
+        # If already disabled, allow password-only
+        if _owner_totp_enabled():
+            raise HTTPException(status_code=401, detail="Invalid authenticator code")
+    try:
+        supabase.table("owner_settings").update(
+            {
+                "totp_enabled": False,
+                "totp_secret": None,
+                "updated_at": _now_iso(),
+            }
+        ).eq("username", user).execute()
+    except Exception as e:
+        raise http_500(e)
+    log_audit_event(actor=user, action="totp_disabled", details={})
+    return {"ok": True, "enabled": False}
 
 
 @router.get("/me")
@@ -210,6 +491,7 @@ def me(auth=Depends(current_auth)):
         "username": auth["username"],
         "role": auth["role"],
         "permissions": auth.get("permissions") or [],
+        "totp_enabled": _owner_totp_enabled() if auth["role"] == "owner" else False,
     }
 
 
@@ -309,6 +591,13 @@ def set_staff_member_active(
         raise http_500(e)
     if not row:
         raise HTTPException(status_code=404, detail="Staff account not found")
+    if not req.is_active:
+        n = revoke_username_sessions(username)
+        log_audit_event(
+            actor=user,
+            action="session_revoked",
+            details={"target": username, "sessions": n},
+        )
     row["can_disable"] = True
     return row
 

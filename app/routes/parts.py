@@ -7,7 +7,7 @@ from io import BytesIO
 from typing import Literal, Optional
 
 import qrcode
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from supabase import create_client
@@ -17,9 +17,12 @@ from app.auth import require_owner
 from app.blockchain import add_checkpoint, get_latest_hash
 from app.config import SUPABASE_KEY, SUPABASE_URL
 from app.errors import http_500
+from app.rate_limit import SlidingWindowRateLimiter, client_ip
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+_verify_limiter = SlidingWindowRateLimiter(max_requests=30, window_seconds=60, prefix="parts_verify")
 
 ZERO_HASH = "0x" + ("00" * 32)
 EventType = Literal["received", "installed"]
@@ -252,7 +255,8 @@ def install_parts(body: InstallPartsBody, user=Depends(require_owner)):
 
 
 @router.get("/{batch_number}/qrcode")
-def get_batch_qrcode(batch_number: str):
+def get_batch_qrcode(batch_number: str, request: Request):
+    _verify_limiter.check_or_raise(client_ip(request), detail="Too many QR requests")
     _get_batch_by_number(batch_number)
     try:
         url = f"https://slippy-goalz-dashboard.vercel.app/verify/{batch_number}"
@@ -266,7 +270,8 @@ def get_batch_qrcode(batch_number: str):
 
 
 @router.get("/{batch_number}/verify")
-def verify_batch(batch_number: str):
+def verify_batch(batch_number: str, request: Request):
+    _verify_limiter.check_or_raise(client_ip(request), detail="Too many verify requests")
     batch = _get_batch_by_number(batch_number)
 
     try:
