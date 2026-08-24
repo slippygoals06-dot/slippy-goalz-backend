@@ -20,7 +20,7 @@ if len(SECRET_KEY) < 32:
 if not OWNER_USERNAME or not OWNER_PASSWORD:
     raise ValueError("OWNER_USERNAME and OWNER_PASSWORD are required.")
 
-from app.routes import bookings, slots, leads, chat, auth, invoices, audit, cash_ledger, whatsapp, integrations, parts, customers, packages
+from app.routes import bookings, slots, leads, chat, auth, invoices, audit, cash_ledger, whatsapp, integrations, parts, customers, packages, attachments
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -30,6 +30,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+        )
+        response.headers["X-XSS-Protection"] = "0"
         if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
             response.headers["Strict-Transport-Security"] = (
                 "max-age=31536000; includeSubDomains"
@@ -84,6 +88,7 @@ app.include_router(integrations.router, prefix="/integrations", tags=["Integrati
 app.include_router(parts.router, prefix="/parts", tags=["Parts"])
 app.include_router(customers.router, prefix="/customers", tags=["Customers"])
 app.include_router(packages.router, prefix="/packages", tags=["Packages"])
+app.include_router(attachments.router, prefix="/bookings", tags=["Attachments"])
 
 
 @app.get("/")

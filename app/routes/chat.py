@@ -1,10 +1,10 @@
 from fastapi import APIRouter, HTTPException, Depends, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
 from groq import Groq
 from supabase import create_client
 from app.config import SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY, BOOKING_PAGE_URL
-from app.auth import verify_token, require_owner
+from app.auth import verify_token, require_owner, require_perm
 from app.customers import find_or_create_customer
 from app.phone import normalize_phone
 from app.slot_claim import (
@@ -228,16 +228,16 @@ def get_wait_time(issue: str) -> str:
 
 # ── Models ─────────────────────────────────────────────────────────────────────
 class Message(BaseModel):
-    role: str
-    content: str
+    role: str = Field(..., max_length=32)
+    content: str = Field(..., max_length=4000)
 
 class OwnerChatRequest(BaseModel):
     messages: List[Message]
     context: Optional[dict] = None
 
 class CustomerChatRequest(BaseModel):
-    message: str
-    session_id: Optional[str] = None
+    message: str = Field(..., min_length=1, max_length=500)
+    session_id: Optional[str] = Field(None, max_length=80)
     history: Optional[List[Message]] = []
 
 # ── Response builder (always consistent shape) ─────────────────────────────────
@@ -954,7 +954,7 @@ class SuggestReplyRequest(BaseModel):
 # ══════════════════════════════════════════════════════════════════════════════
 # ── Owner: list all chat sessions (for dashboard Chats page) ───────────────────
 @router.get("/sessions")
-def list_chat_sessions(user=Depends(verify_token), limit: int = 100):
+def list_chat_sessions(user=Depends(require_perm("chats")), limit: int = 100):
     """Return recent chat_sessions for the owner dashboard (read-only)."""
     try:
         cap = max(1, min(int(limit or 100), 200))
@@ -1013,7 +1013,7 @@ ANSWER STYLE:
 
 
 @router.post("/suggest-reply")
-def suggest_reply(req: SuggestReplyRequest, user=Depends(verify_token)):
+def suggest_reply(req: SuggestReplyRequest, user=Depends(require_perm("chats"))):
     """Suggest a short owner reply for an inbound customer chat thread."""
     try:
         history = list(req.history or [])

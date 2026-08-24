@@ -11,6 +11,7 @@ from supabase import create_client
 
 from app.auth import require_owner
 from app.config import SUPABASE_URL, SUPABASE_KEY
+from app.crypto_secrets import decrypt_secret, encrypt_secret
 from app.errors import http_500
 
 router = APIRouter()
@@ -153,7 +154,12 @@ def _fetch_channel(channel: str, include_token: bool = False) -> Optional[Dict[s
     except Exception as e:
         raise http_500(e)
     rows = res.data or []
-    return rows[0] if rows else None
+    if not rows:
+        return None
+    row = dict(rows[0])
+    if include_token and "access_token" in row:
+        row["access_token"] = decrypt_secret(row.get("access_token")) or ""
+    return row
 
 
 def _upsert_channel(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -211,11 +217,10 @@ def connect_whatsapp(body: WhatsAppConnectRequest, user=Depends(require_owner)):
     meta = _verify_whatsapp_credentials(phone_number_id, access_token)
     now = _now_iso()
 
-    # TODO: encrypt access_token before production
     row = {
         "channel": WHATSAPP_CHANNEL,
         "phone_number_id": phone_number_id,
-        "access_token": access_token,
+        "access_token": encrypt_secret(access_token),
         "status": "connected",
         "last_verified_at": now,
         "updated_at": now,
@@ -286,7 +291,7 @@ def connect_instagram(body: InstagramConnectRequest, user=Depends(require_owner)
             "channel": "instagram",
             "phone_number_id": account_id or None,
             "waba_id": username,
-            "access_token": access_token or None,
+            "access_token": encrypt_secret(access_token) if access_token else None,
             "status": "connected",
             "last_verified_at": now,
             "updated_at": now,
@@ -322,7 +327,7 @@ def connect_tiktok(body: TikTokConnectRequest, user=Depends(require_owner)):
             "channel": "tiktok",
             "phone_number_id": client_key or None,
             "waba_id": username,
-            "access_token": access_token or None,
+            "access_token": encrypt_secret(access_token) if access_token else None,
             "status": "connected",
             "last_verified_at": now,
             "updated_at": now,

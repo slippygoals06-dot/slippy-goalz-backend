@@ -52,4 +52,4 @@ apscheduler
 reportlab
 web3
 eth-account
-qrcode[pil]
+python-multipart>=0.0.9

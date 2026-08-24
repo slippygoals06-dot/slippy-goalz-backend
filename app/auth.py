@@ -13,6 +13,9 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 ROLE_OWNER = "owner"
 ROLE_STAFF = "staff"
 
+# Short-lived dashboard sessions (re-login after idle); staff disable still kills immediately
+ACCESS_TOKEN_HOURS = 2
+
 
 def verify_password(plain, hashed):
     return pwd_context.verify(plain, hashed)
@@ -22,8 +25,10 @@ def hash_password(password):
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(hours=8))
-    to_encode.update({"exp": expire})
+    expire = datetime.utcnow() + (
+        expires_delta or timedelta(hours=ACCESS_TOKEN_HOURS)
+    )
+    to_encode.update({"exp": expire, "iat": datetime.utcnow()})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
