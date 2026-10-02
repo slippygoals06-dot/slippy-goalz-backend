@@ -1,8 +1,10 @@
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
+from app.auth import COOKIE_ACCESS, COOKIE_REFRESH
 from app.config import (
     SUPABASE_URL,
     SUPABASE_KEY,
@@ -42,6 +44,21 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class CookieOriginMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and (
+            request.cookies.get(COOKIE_ACCESS)
+            or request.cookies.get(COOKIE_REFRESH)
+        ):
+            origin = request.headers.get("origin")
+            if origin not in _origins:
+                return JSONResponse(
+                    {"detail": "Untrusted request origin"},
+                    status_code=403,
+                )
+        return await call_next(request)
+
+
 app = FastAPI(
     title="Slippy Goalz Arena API",
     description="Backend for Slippy Goalz Arena",
@@ -51,30 +68,33 @@ app = FastAPI(
     openapi_url=None if IS_PRODUCTION else "/openapi.json",
 )
 
-app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=TRUSTED_PROXY_HOSTS)
-
 _origins = [
     "https://slippy-goalz-dashboard.vercel.app",
     "https://slippy-goalz-dashboard-blue.vercel.app",
-    "http://localhost:5173",
-    "http://localhost:5174",
-    "http://localhost:5180",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:5174",
-    "http://127.0.0.1:5180",
 ]
 if not IS_PRODUCTION:
-    _origins.append("null")
+    _origins.extend(
+        [
+            "http://localhost:5173",
+            "http://localhost:5174",
+            "http://localhost:5180",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:5174",
+            "http://127.0.0.1:5180",
+            "null",
+        ]
+    )
 
+app.add_middleware(CookieOriginMiddleware)
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=TRUSTED_PROXY_HOSTS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
-    allow_origin_regex=r"https://slippy-goalz-dashboard[A-Za-z0-9.-]*\.vercel\.app$",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
 )
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 app.include_router(bookings.router, prefix="/bookings", tags=["Bookings"])
