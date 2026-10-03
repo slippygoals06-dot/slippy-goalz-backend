@@ -13,3 +13,7 @@
 # production API by default (see src/config.js).
 
 Slippy Goalz API — based on the iRepair backend template.
+
+## Manager briefing cache
+
+Manager cache is process-local; run a single Railway instance with one Uvicorn worker. If scaling out, move the cache to Supabase.

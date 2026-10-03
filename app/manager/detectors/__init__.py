@@ -1,0 +1,1 @@
+"""Deterministic Manager finding detectors."""

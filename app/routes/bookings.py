@@ -12,6 +12,7 @@ from app.auth import require_perm, optional_owner
 from app.config import SUPABASE_URL, SUPABASE_KEY, WHATSAPP_CONFIRM_TEMPLATE
 from app.errors import http_500
 from app.customers import find_or_create_customer
+from app.manager.events import record_booking_event
 from app.phone import normalize_phone
 from app.rate_limit import SlidingWindowRateLimiter, client_ip
 from app.routes.reminders import send_booking_confirmation, schedule_reminder
@@ -302,6 +303,20 @@ def create_booking(booking: Booking, request: Request):
             if is_unique_violation(insert_err):
                 raise HTTPException(status_code=409, detail=SLOT_UNAVAILABLE_MSG) from insert_err
             raise insert_err
+
+        for event_type in ("booking_started", "booking_confirmed"):
+            try:
+                record_booking_event(
+                    supabase,
+                    event_type=event_type,
+                    customer_ref=phone,
+                    booking_ref=booking_id,
+                )
+            except Exception as event_err:
+                print(
+                    f"Booking event write failed ({event_type}, {booking_id}): "
+                    f"{event_err}"
+                )
 
         # --- NEW: send confirmation + schedule reminder ---
         if booking.email:

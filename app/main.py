@@ -23,7 +23,23 @@ if len(SECRET_KEY) < 32:
 if not OWNER_USERNAME or not OWNER_PASSWORD:
     raise ValueError("OWNER_USERNAME and OWNER_PASSWORD are required.")
 
-from app.routes import bookings, slots, leads, chat, auth, invoices, audit, cash_ledger, whatsapp, integrations, parts, customers, packages, attachments
+from app.routes import (
+    bookings,
+    slots,
+    leads,
+    chat,
+    auth,
+    invoices,
+    audit,
+    cash_ledger,
+    whatsapp,
+    integrations,
+    parts,
+    customers,
+    packages,
+    attachments,
+    manager as manager_routes,
+)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -110,6 +126,7 @@ app.include_router(parts.router, prefix="/parts", tags=["Parts"])
 app.include_router(customers.router, prefix="/customers", tags=["Customers"])
 app.include_router(packages.router, prefix="/packages", tags=["Packages"])
 app.include_router(attachments.router, prefix="/bookings", tags=["Attachments"])
+app.include_router(manager_routes.router, prefix="/manager", tags=["Manager"])
 
 
 @app.get("/")

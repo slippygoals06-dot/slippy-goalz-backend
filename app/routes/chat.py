@@ -6,6 +6,7 @@ from supabase import create_client
 from app.config import SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY, BOOKING_PAGE_URL
 from app.auth import verify_token, require_owner, require_perm
 from app.customers import find_or_create_customer
+from app.manager.events import record_booking_event
 from app.phone import normalize_phone
 from app.slot_claim import (
     claim_slot,
@@ -1694,6 +1695,16 @@ AVAILABLE DATES (live):
                     session_id, slot_buttons=slot_btns
                 )
             collected["phone"] = formatted
+            try:
+                record_booking_event(
+                    supabase,
+                    event_type="booking_started",
+                    customer_ref=formatted,
+                )
+            except Exception as event_err:
+                logger.warning(
+                    f"Booking-start event write failed for customer: {event_err}"
+                )
             session["step"] = "get_email"
             reply = r(
                 "What's your email? (for booking confirmation — type 'skip' to skip)",
@@ -1800,6 +1811,7 @@ AVAILABLE DATES (live):
                     )
 
                 slot_id = claimed.get("id")
+                booking_inserted = False
                 try:
                     customer_id = None
                     try:
@@ -1833,6 +1845,7 @@ AVAILABLE DATES (live):
 
                     try:
                         supabase.table("bookings").insert(booking_row).execute()
+                        booking_inserted = True
                     except Exception as insert_err:
                         raced = (
                             supabase.table("bookings")
@@ -1860,6 +1873,19 @@ AVAILABLE DATES (live):
                     if slot_id is not None:
                         link_slot_booking(slot_id, booking_id)
                     logger.info(f"Booking created: {booking_id} | {phone} | {booking_date} {booking_time}")
+                    if booking_inserted:
+                        try:
+                            record_booking_event(
+                                supabase,
+                                event_type="booking_confirmed",
+                                customer_ref=phone,
+                                booking_ref=booking_id,
+                            )
+                        except Exception as event_err:
+                            logger.warning(
+                                "Booking-confirmed event write failed for "
+                                f"{booking_id}: {event_err}"
+                            )
                 except Exception as e:
                     logger.error(f"Booking insert failed for {phone}: {e}")
                     if slot_id is not None:
